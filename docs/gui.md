@@ -1,7 +1,7 @@
 # Codex desktop app (`codex-gui`)
 
 `codex-gui` is a native desktop front end for Codex with browser-style tabs.
-Each tab is one agent thread bound to one folder; many agents can work at the
+Each tab is one agent thread in a folder, or your home for a folderless conversation; many agents can work at the
 same time. It runs the Codex app-server inside its own process, so it needs no
 browser engine, opens no network port by default, and works on machines
 without a GPU (for example Azure Virtual Desktop) through software rendering.
@@ -12,10 +12,10 @@ Build from source (see [install.md](install.md) for the toolchain):
 
 ```bash
 cd codex-rs
-cargo build --release -p codex-gui
-./target/release/codex-gui                  # New Tab page
-./target/release/codex-gui ~/src/my-repo    # start a thread in a folder
-./target/release/codex-gui --resume <id>    # reopen a thread
+cargo build -p codex-gui
+./target/debug/codex-gui                  # New Tab page
+./target/debug/codex-gui ~/src/my-repo    # start a thread in a folder
+./target/debug/codex-gui --resume <id>    # reopen a thread
 ```
 
 A folder or thread given on the command line opens the same way as from the
@@ -48,8 +48,8 @@ the app was started from, or appear in a message box when there is none.
 
 ## The window
 
-- **Tabs.** `Ctrl/⌘+T` opens a New Tab page where you pick a folder (recent
-  folders are listed). Each thread tab shows a status dot: blue while working,
+- **Tabs.** `Ctrl/⌘+T` opens New Tab. Choose a folder from recent locations,
+  or click **New conversation** to use your home without choosing a project. Each thread tab shows a status dot: blue while working,
   amber when it needs your decision, red on errors, green for unread replies.
   Right-click a tab to rename, fork, compact, review, create `AGENTS.md`,
   export as Markdown, copy the thread id, or archive it. Middle-click closes.
@@ -205,3 +205,15 @@ with `--renderer software` and keep whichever feels smoother.
   (install the `bubblewrap` package).
 - Help › About shows the "Made with Slint" attribution required by Slint's
   royalty-free desktop license.
+
+Thread headings have a **+** button to start a conversation in that folder.
+Right-click a tab or a thread in the sidebar for **Rename** and **Archive**.
+`/new` starts immediately in the current folder; `/new <name>` names the new thread.
+On New Tab, **New conversation** uses your home without a folder picker.
+Search shows title matches first and adds history matches using Luna on your
+configured provider, with your usual model as fallback. It sends message excerpts
+to that provider. Common and All settings offer model, reasoning and context choices.
+
+Use development builds for iteration. Make a release build only after completing
+all requested changes and relevant checks, skip macOS release builds for now, and
+clean local build artifacts after verifying the binaries uploaded to GitHub.

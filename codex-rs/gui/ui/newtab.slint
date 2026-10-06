@@ -24,6 +24,7 @@ export global NewTabState {
     in property <bool> sign-in-needed;
 
     callback choose-folder();
+    callback folderless();
     callback open-file();
     callback resume-thread();
     callback sign-in();
@@ -130,7 +131,7 @@ export component NewTabView inherits Rectangle {
                         font-weight: 600;
                     }
                     Text {
-                        text: "Pick a folder for the agent to work in. Each tab is one thread in one folder.";
+                        text: "Choose a folder or start a conversation without a project folder.";
                         color: Theme.text-muted;
                         wrap: word-wrap;
                     }
@@ -175,6 +176,10 @@ export component NewTabView inherits Rectangle {
                         alignment: start;
                         spacing: Theme.pad-m;
 
+                        FlatButton {
+                            text: "New conversation";
+                            clicked => { NewTabState.folderless(); }
+                        }
                         FlatButton {
                             text: "Choose folder…";
                             primary: true;

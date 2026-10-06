@@ -421,7 +421,7 @@ pub(crate) fn temporary_thread_params(
     ThreadStartParams {
         model: options.model,
         model_provider: options.model_provider,
-        cwd: Some(options.cwd),
+        cwd: (!options.cwd.is_empty()).then_some(options.cwd),
         sandbox: Some(SandboxMode::ReadOnly),
         runtime_workspace_roots: Some(Vec::new()),
         ephemeral: Some(true),
@@ -484,7 +484,7 @@ where
 ///
 /// `config/read` and `thread/start` are bounded separately: a `thread/start`
 /// that answers after its deadline still gets its thread unsubscribed.
-async fn start_temporary_thread(
+pub(crate) async fn start_temporary_thread(
     backend: &Backend,
     options: TemporaryThreadOptions,
 ) -> Result<ThreadStartResponse, RecapError> {
@@ -494,7 +494,7 @@ async fn start_temporary_thread(
             request_id: backend.next_request_id(),
             params: ConfigReadParams {
                 include_layers: false,
-                cwd: Some(options.cwd.clone()),
+                cwd: (!options.cwd.is_empty()).then(|| options.cwd.clone()),
             },
         }),
     )
@@ -566,7 +566,7 @@ pub(crate) async fn collect_structured_response(
 }
 
 /// Best-effort, bounded detach of the temporary thread.
-async fn unsubscribe_temporary_thread(backend: &Backend, thread_id: String) {
+pub(crate) async fn unsubscribe_temporary_thread(backend: &Backend, thread_id: String) {
     let request = backend.request::<ThreadUnsubscribeResponse>(ClientRequest::ThreadUnsubscribe {
         request_id: backend.next_request_id(),
         params: ThreadUnsubscribeParams { thread_id },

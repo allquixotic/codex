@@ -48,6 +48,10 @@ pub(crate) enum Step {
     NewThread(PathBuf),
     /// Start a thread in this folder through the folder-trust check.
     OpenFolder(PathBuf),
+    /// Start a conversation in the user home without a folder picker.
+    Folderless(bool),
+    /// Drive sidebar search, thread actions, or log its result rows.
+    Sidebar(Vec<String>),
     /// Resume an existing thread id.
     Resume(String),
     /// Send text to the active thread.
@@ -202,6 +206,33 @@ impl AppController {
                 }
                 Step::NewThread(folder) => self.start_thread_in_folder(folder),
                 Step::OpenFolder(folder) => self.start_thread_checked(folder),
+                Step::Folderless(true) => self.start_folderless_thread(),
+                Step::Folderless(false) => {}
+                Step::Sidebar(args) => {
+                    let state = self.window.global::<crate::ui::SidebarState>();
+                    match args.first().map(String::as_str) {
+                        Some("search") => {
+                            let query = args.get(1).cloned().unwrap_or_default();
+                            state.set_search_text(query.as_str().into());
+                            state.invoke_search_edited(query.into());
+                        }
+                        Some("log") => {
+                            use slint::Model;
+                            let rows: Vec<_> = state
+                                .get_rows()
+                                .iter()
+                                .filter(|r| r.kind == crate::ui::SidebarRowKind::Thread)
+                                .map(|r| r.title.to_string())
+                                .collect();
+                            eprintln!(
+                                "codex-gui automation: sidebar {rows:?} searching {} error {:?}",
+                                state.get_searching_history(),
+                                state.get_error()
+                            );
+                        }
+                        _ => {}
+                    }
+                }
                 Step::Resume(thread_id) => self.open_thread(thread_id, None),
                 Step::Send(text) => {
                     if let Some(index) = self.active_thread_index() {
@@ -287,13 +318,17 @@ impl AppController {
                 }
                 Step::Pointer((kind, x, y)) => {
                     let position = slint::LogicalPosition::new(x, y);
-                    let button = slint::platform::PointerEventButton::Left;
+                    let button = if kind.starts_with("right-") {
+                        slint::platform::PointerEventButton::Right
+                    } else {
+                        slint::platform::PointerEventButton::Left
+                    };
                     let event = match kind.as_str() {
-                        "press" => {
+                        "press" | "right-press" => {
                             Some(slint::platform::WindowEvent::PointerPressed { position, button })
                         }
                         "move" => Some(slint::platform::WindowEvent::PointerMoved { position }),
-                        "release" => {
+                        "release" | "right-release" => {
                             Some(slint::platform::WindowEvent::PointerReleased { position, button })
                         }
                         other => {

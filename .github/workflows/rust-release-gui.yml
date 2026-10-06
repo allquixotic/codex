@@ -1,17 +1,16 @@
-# Builds the codex-gui desktop app for macOS, Windows, and Linux.
+# Builds the codex-gui desktop app for Windows and Linux.
 #
 # Runs on release tags and on demand. Each artifact holds codex-gui and the
 # helper executables the embedded runtime locates next to it. Artifacts are
-# unsigned; macOS bundles (including the helpers in Contents/MacOS) must be
-# signed and notarized with the same identity as the CLI before they are
-# distributed. Kept separate from rust-release.yml so the GUI cannot
-# block CLI releases while it matures.
+# unsigned. macOS release builds and signing are deferred. Run a full
+# release build only after the requested feature set and targeted checks
+# are complete. Kept separate from rust-release.yml.
 
 name: rust-release-gui
 on:
   push:
     tags:
-      - "rust-v*.*.*"
+      - "codex-gui-v*"
   workflow_dispatch:
 
 concurrency:
@@ -32,10 +31,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15-xlarge
-            target: aarch64-apple-darwin
-          - runner: macos-15-xlarge
-            target: x86_64-apple-darwin
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             runs_on:

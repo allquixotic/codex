@@ -51,6 +51,9 @@ pub(crate) enum Editor {
         values: Vec<String>,
         zero_unsets: bool,
     },
+    IntegerChoices {
+        values: Vec<i64>,
+    },
     Text,
     /// Shell words stored as a string array (`notify`).
     ShellWords,
@@ -73,7 +76,7 @@ impl Editor {
         match self {
             Self::Header => 0,
             Self::Bool => 1,
-            Self::Enum { .. } => 2,
+            Self::Enum { .. } | Self::IntegerChoices { .. } => 2,
             Self::Text | Self::ShellWords => 3,
             Self::Integer { .. } => 4,
             Self::Number { .. } => 5,
@@ -502,6 +505,79 @@ fn selected_model<'a>(models: &'a [Model], effective: &Value) -> Option<&'a Mode
         .or_else(|| models.iter().find(|model| model.is_default))
 }
 
+/// The bundled catalog supplies actual upper bounds, including Bedrock's
+/// region-prefixed model IDs. Unknown models retain a custom numeric editor.
+fn context_limit(model: &str) -> Option<i64> {
+    static CATALOG: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let catalog = CATALOG.get_or_init(|| {
+        serde_json::from_str(include_str!("../../../models-manager/models.json"))
+            .unwrap_or(Value::Null)
+    });
+    catalog
+        .get("models")?
+        .as_array()?
+        .iter()
+        .find(|entry| {
+            entry
+                .get("slug")
+                .and_then(Value::as_str)
+                .is_some_and(|slug| model == slug || model.ends_with(&format!(".{slug}")))
+        })?
+        .get("max_context_window")?
+        .as_i64()
+}
+
+fn context_row(inputs: &FieldInputs<'_>, models: &[Model]) -> FieldRow {
+    let selected = model::lookup(inputs.effective, &["model"])
+        .and_then(Value::as_str)
+        .or_else(|| selected_model(models, inputs.effective).map(|model| model.model.as_str()));
+    let limit = selected.and_then(context_limit);
+    let mut row = FieldRow::new(
+        Editor::Integer {
+            min: Some(1.0),
+            max: None,
+        },
+        "model_context_window".into(),
+        "Context limit".into(),
+    );
+    row.description = "Maximum context tokens for new conversations. Default uses the model's normal context window.".into();
+    row.note = NEW_THREAD_NOTE.into();
+    let current =
+        model::lookup(inputs.effective, &["model_context_window"]).and_then(Value::as_i64);
+    if let Some(limit) = limit {
+        let mut values: Vec<i64> = [128_000, 256_000, 512_000, 1_000_000]
+            .into_iter()
+            .filter(|value| *value <= limit)
+            .collect();
+        if !values.contains(&limit) {
+            values.push(limit);
+        }
+        row.options = vec!["Default (model context window)".into()];
+        row.options.extend(values.iter().map(|value| {
+            if *value == 1_000_000 {
+                "1M tokens".into()
+            } else {
+                format!("{value} tokens")
+            }
+        }));
+        if let Some(current) = current
+            && !values.contains(&current)
+        {
+            values.push(current);
+            row.options.push(format!("{current} tokens (custom)"));
+        }
+        row.option_index = current
+            .and_then(|value| values.iter().position(|v| *v == value))
+            .map_or(0, |i| (i + 1) as i32);
+        row.editor = Editor::IntegerChoices { values };
+    } else {
+        row.text = current.map(|value| value.to_string()).unwrap_or_default();
+        row.placeholder = "Model default".into();
+    }
+    decorate(&mut row, &["model_context_window".into()], inputs, false);
+    row
+}
+
 /// Rows of the Common page.
 pub(crate) fn common_rows(inputs: &FieldInputs<'_>, models: &[Model]) -> Vec<FieldRow> {
     let requirements = inputs.requirements;
@@ -548,7 +624,6 @@ pub(crate) fn common_rows(inputs: &FieldInputs<'_>, models: &[Model]) -> Vec<Fie
     }
 
     // Reasoning effort, from the selected model's capabilities.
-    let effort_segments = vec!["model_reasoning_effort".to_string()];
     match selected_model(models, inputs.effective) {
         Some(selected) if !selected.supported_reasoning_efforts.is_empty() => {
             let pairs: Vec<(String, String)> = selected
@@ -577,24 +652,37 @@ pub(crate) fn common_rows(inputs: &FieldInputs<'_>, models: &[Model]) -> Vec<Fie
             }
             rows.push(row);
         }
-        _ => {
-            let mut row = FieldRow::new(
-                Editor::Text,
-                "model_reasoning_effort".to_string(),
-                "Reasoning effort".to_string(),
-            );
-            row.description =
-                "How much the model reasons before answering (for example low, medium, high)."
-                    .to_string();
-            row.note = NEW_THREAD_NOTE.to_string();
-            row.text = model::lookup(inputs.effective, &effort_segments)
-                .map(model::display_value)
-                .unwrap_or_default();
-            row.placeholder = "Model default".to_string();
-            decorate(&mut row, &effort_segments, inputs, /*snippet*/ false);
-            rows.push(row);
-        }
+        Some(_) => rows.push(choice_row(
+            Choices {
+                key: "model_reasoning_effort",
+                title: "Reasoning effort",
+                description: "This model reports no configurable reasoning effort.",
+                note: NEW_THREAD_NOTE,
+                choices: Vec::new(),
+            },
+            None,
+            inputs,
+        )),
+        None => rows.push(choice_row(
+            Choices {
+                key: "model_reasoning_effort",
+                title: "Reasoning effort",
+                description: "Reasoning effort for new conversations.",
+                note: NEW_THREAD_NOTE,
+                choices: choices(&[
+                    ("none", "None"),
+                    ("minimal", "Minimal"),
+                    ("low", "Low"),
+                    ("medium", "Medium"),
+                    ("high", "High"),
+                    ("xhigh", "Extra high"),
+                ]),
+            },
+            None,
+            inputs,
+        )),
     }
+    rows.push(context_row(inputs, models));
 
     rows.push(choice_row(
         Choices {
@@ -706,6 +794,15 @@ fn capitalize(text: &str) -> String {
 
 /// Value written when option `index` is chosen.
 pub(crate) fn value_for_option(editor: &Editor, index: i32) -> FieldValue {
+    if let Editor::IntegerChoices { values } = editor {
+        return match usize::try_from(index) {
+            Ok(0) => FieldValue::Unset,
+            Ok(index) => values.get(index - 1).map_or(FieldValue::NoChange, |value| {
+                FieldValue::Set(Value::from(*value))
+            }),
+            Err(_) => FieldValue::NoChange,
+        };
+    }
     let Editor::Enum {
         values,
         zero_unsets,
@@ -774,7 +871,9 @@ pub(crate) fn value_for_text(editor: &Editor, text: &str) -> Result<FieldValue, 
             Ok(None) => Ok(FieldValue::Unset),
             Err(problem) => Err(problem.to_string()),
         },
-        Editor::Header | Editor::Bool | Editor::Enum { .. } => Ok(FieldValue::NoChange),
+        Editor::Header | Editor::Bool | Editor::Enum { .. } | Editor::IntegerChoices { .. } => {
+            Ok(FieldValue::NoChange)
+        }
     }
 }
 
@@ -842,7 +941,10 @@ fn pending_key(page: FieldPage, key: &str) -> String {
 fn apply_pending(row: &mut FieldRow, pending: Option<&PendingControl>) {
     match (pending, &row.editor) {
         (Some(PendingControl::Checked(checked)), Editor::Bool) => row.checked = *checked,
-        (Some(PendingControl::Option(index)), Editor::Enum { .. }) => row.option_index = *index,
+        (
+            Some(PendingControl::Option(index)),
+            Editor::Enum { .. } | Editor::IntegerChoices { .. },
+        ) => row.option_index = *index,
         _ => {}
     }
 }
@@ -992,6 +1094,20 @@ impl AppController {
         let all: Vec<FieldRow> = match (&fields.sections, have_config) {
             (Some(sections), true) => all_rows(sections, &fields.search, &inputs)
                 .into_iter()
+                .map(|row| {
+                    if matches!(
+                        row.key.as_str(),
+                        "model" | "model_reasoning_effort" | "model_context_window"
+                    ) {
+                        common
+                            .iter()
+                            .find(|common| common.key == row.key)
+                            .cloned()
+                            .unwrap_or(row)
+                    } else {
+                        row
+                    }
+                })
                 .map(decorate_state(FieldPage::All))
                 .collect(),
             _ => Vec::new(),
@@ -1461,6 +1577,29 @@ mod tests {
             "isDefault": default,
         }))
         .expect("model")
+    }
+
+    #[test]
+    fn context_choices_use_numeric_values_and_preserve_custom_overrides() {
+        let effective = json!({"model": "us.openai.gpt-6.1-sol", "model_context_window": 300000});
+        let user_config = effective.clone();
+        let origins = HashMap::new();
+        let inputs = FieldInputs {
+            effective: &effective,
+            user: &user_config,
+            origins: &origins,
+            requirements: None,
+            features: &[],
+        };
+        let row = context_row(&inputs, &[]);
+        assert!(row.options.iter().any(|label| label == "872000 tokens"));
+        assert!(!row.options.iter().any(|label| label == "1M tokens"));
+        assert_eq!(
+            value_for_option(&row.editor, row.option_index),
+            FieldValue::Set(json!(300000))
+        );
+        assert_eq!(value_for_option(&row.editor, 0), FieldValue::Unset);
+        assert_eq!(context_limit("unknown-model"), None);
     }
 
     #[test]

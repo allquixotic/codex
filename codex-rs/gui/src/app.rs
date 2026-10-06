@@ -1013,23 +1013,6 @@ impl AppController {
             TabKindCode::NewTab => self.newtab_show(),
             TabKindCode::Thread => {}
         }
-        self.sync_window_title();
-    }
-
-    /// Keeps the OS window title (title bar, Dock/taskbar, window lists)
-    /// in step with the active tab's title, which changes on rename and
-    /// with the first message.
-    fn sync_window_title(&self) {
-        let title = window_title(
-            self.active
-                .and_then(|index| self.tabs.get(index))
-                .map(|tab| tab.info().title.to_string())
-                .as_deref(),
-        );
-        let state = self.window.global::<AppState>();
-        if state.get_window_title() != title.as_str() {
-            state.set_window_title(title.into());
-        }
     }
 
     pub(crate) fn refresh_tabs(&self) {
@@ -1054,7 +1037,6 @@ impl AppController {
         if !unchanged {
             self.tab_model.set_vec(infos);
         }
-        self.sync_window_title();
         self.sidebar_on_tabs_changed();
     }
 
@@ -1767,14 +1749,6 @@ fn decode_icon(png: &[u8], max_size: u32) -> Option<slint::SharedPixelBuffer<sli
     ))
 }
 
-/// OS window title for the active tab's title.
-fn window_title(tab_title: Option<&str>) -> String {
-    match tab_title.map(str::trim).filter(|title| !title.is_empty()) {
-        Some(title) => format!("{title} — Codex"),
-        None => "Codex".to_string(),
-    }
-}
-
 /// "1 thread is still working" / "3 threads are still working".
 fn running_threads_phrase(count: usize) -> String {
     if count == 1 {
@@ -1855,16 +1829,6 @@ mod tests {
     fn truncate_chars_adds_ellipsis() {
         assert_eq!(truncate_chars("abcdef", 4), "abc…");
         assert_eq!(truncate_chars("abc", 4), "abc");
-    }
-
-    #[test]
-    fn window_title_follows_the_tab_title() {
-        assert_eq!(
-            window_title(Some("Fix auth tests")),
-            "Fix auth tests — Codex"
-        );
-        assert_eq!(window_title(Some("  ")), "Codex");
-        assert_eq!(window_title(None), "Codex");
     }
 
     #[test]

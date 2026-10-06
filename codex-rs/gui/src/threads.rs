@@ -10,7 +10,7 @@
 //! is still in flight is sent as soon as the turn's id arrives.
 
 mod picker;
-mod recap;
+pub(crate) mod recap;
 mod review;
 mod side;
 mod worktree;

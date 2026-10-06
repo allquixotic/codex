@@ -1,802 +1,995 @@
 # codex-gui: a native Slint front end for Codex
 
-Status: implemented on branch `feature/codex-gui` (crate `codex-rs/gui`).
-Section 12 records what shipped, measured results, and where the
-implementation deviates from this plan. Sections 1–11 are the original plan,
-kept for context; corrections are marked inline.
+Status: implemented in `codex-rs/gui` on `feature/codex-gui`, committed as
+`163153140f`, and published on `allquixotic/codex` as
+[`codex-gui-v0.1.0`](https://github.com/allquixotic/codex/releases/tag/codex-gui-v0.1.0)
+(Windows x64 zip). macOS release builds are deferred by request.
 
-This document is the plan for `codex-gui[.exe]`, a second binary built from
-this workspace that opens a native, low-resource, tabbed GUI instead of the
-terminal UI. It records what already exists in the codebase that we can
-reuse, the architectural decisions, the feature checklist, the risks, and the
-phased delivery order.
-
----
+This document retains the goals, architectural decisions, feature coverage,
+risks and delivery plan, followed by the October 2026 implementation report.
+Planned behavior is distinguished from what shipped. For operating instructions
+see [the user guide](docs/gui.md); for development see
+[the crate README](codex-rs/gui/README.md).
 
 ## 1. Goals
 
-1. **Everything Codex CLI can do, with a mouse.** Feature parity with the
-   TUI (`codex-rs/tui`): threads, turns, approvals, exec output, patches,
-   diffs, MCP, skills, plugins, hooks, review, plan mode, compaction, fork,
-   resume, model picker, images, `@` mentions, sub-agents.
-2. **Browser-style tabs.** One tab per agent thread, each bound to a folder.
-   Many agents run concurrently and independently. No "project" concept.
-3. **Inter-agent messaging between tabs.** Agents in separate tabs can send
-   each other messages, and the user can forward content between tabs.
-4. **Native performance, tiny footprint.** Slint, single process, single
-   binary, no IPC, no web view, no open port by default. Works without a GPU
-   (Azure Virtual Desktop, VMs) through software rendering.
-5. **Scales to very long threads.** Transcript rendering is a sliding window
-   over on-disk history. Memory does not grow with thread length.
-6. **Settings as a GUI**, not slash commands: a schema-driven settings pane
-   plus a one-click AWS Bedrock setup page with profile and model pickers.
-7. **Any inference path Codex supports.** OpenAI, ChatGPT login, Amazon
-   Bedrock (Mantle and Runtime endpoints), Ollama, LM Studio, custom
-   Responses-API providers.
-8. **Plain text file viewer** with selectable text. No syntax highlighting,
-   no LSP.
-9. **Windows and macOS first**, Linux should work because Slint and winit do.
+1. **Codex with a mouse:** bring the TUI's threads, tools, approvals, reviews,
+   plans, configuration and agent workflows to a native desktop interface.
+2. **Browser-style tabs:** one independent agent thread per tab, each bound to
+   a folder (or the user’s home in folderless mode), with concurrent work and no separate project concept.
+3. **Cross-tab messaging:** let agents coordinate across tabs with user consent,
+   and let users forward replies between threads.
+4. **Native performance:** Slint UI, embedded app-server, no web view or open
+   port by default, and a software rendering path for GPU-less machines.
+   The delivered package includes the runtime's helper executables; the
+   app-server itself remains in-process.
+5. **Long-thread scalability:** page history from disk and bound the UI's
+   resident transcript instead of retaining the whole conversation.
+6. **Graphical settings:** common controls, schema-driven configuration and an
+   AWS Bedrock setup page.
+7. **Provider coverage:** OpenAI/ChatGPT, Bedrock Mantle and Runtime, Ollama,
+   LM Studio and custom Responses-API providers.
+8. **Selectable plain-text files:** file and diff viewers without IDE features.
+9. **Platform coverage:** Windows and macOS first, with Linux support.
 
-Non-goals (for now): IDE features, terminals, git clients, syntax
-highlighting, LSP, mobile, remote server mode as a default.
-
----
+Non-goals: an IDE, terminal emulator, Git client, syntax highlighting, LSP,
+mobile support or remote-server mode by default. Some parity and polish work
+remains (§12.6); startup meets the original targets, but memory and binary size
+do not.
 
 ## 2. Survey: does anything already meet all criteria?
 
-No. Checked October 2026.
+The October 2026 survey found no existing application meeting all requirements.
 
-| Project | Stack | Why it fails the criteria |
-|---|---|---|
-| OpenAI Codex / ChatGPT desktop app | Electron, closed | Windows Store only on Windows (no AVD), web renderer, closed source. The app-server now exposes `account/bedrock/*` RPCs, so Bedrock may land there, but the other blockers remain. |
-| t3code | Web UI + IPC to Codex | Web rendering, client/server with open port, slow startup, "project" model. |
-| jk-gan/agent-hub | Rust + GPUI, spawns `codex app-server` child | GPUI has no software renderer (same blocker as Zed on AVD). Cross-process JSON-RPC over stdio. macOS primary. |
-| 3h2oto/agentx, CES-Ltd/Lumi | Rust + GPUI, ACP | GPU required; generic ACP client, not Codex-native. |
-| wieslawsoltes/CodexGui | .NET + Avalonia, spawns app-server | Not Rust, .NET runtime, child process. Avalonia does have software rendering. Closest in spirit. |
-| CodexMonitor, monocode, Codexia/OnlyCode, codex-app-plus, Nimbalyst, desktop-cc-gui | Tauri / Electron + React | Web view rendering, JS single-thread UI, child process to app-server. CodexMonitor inactive since March 2026. |
-| Redminote11tech/Codex-Native | Rust + GTK/WebKitGTK shell around official frontend | Web view, Linux only. |
-| Codex CLI TUI | ratatui | No mouse text editing. Otherwise the reference feature set. |
+| Candidate | Main mismatch |
+|---|---|
+| Official Codex / ChatGPT desktop app | Closed application with web rendering and Windows distribution constraints. |
+| t3code | Web UI, client/server transport and a project-oriented model. |
+| jk-gan/agent-hub; agentx; Lumi | Rust/GPUI, but GPU-dependent and using a child app-server or generic ACP. |
+| wieslawsoltes/CodexGui | Closest in spirit, including software rendering, but .NET/Avalonia with a child app-server. |
+| CodexMonitor, monocode, Codexia/OnlyCode, codex-app-plus, Nimbalyst, desktop-cc-gui | Tauri/Electron and a web UI. |
+| Codex-Native | GTK/WebKitGTK wrapper, Linux-only. |
+| Codex CLI TUI | Reference feature set, but without graphical mouse editing. |
 
-Conclusion: write it. But most of the hard parts already exist in this repo.
-
----
+Decision: build a native front end while reusing Codex's existing runtime.
+This is the recorded survey rationale, not an ongoing assessment of those projects.
 
 ## 3. What already exists in this repo that we build on
 
-Verified at HEAD `80e0b51c9e`. Paths relative to `codex-rs/`.
+The initial code survey used HEAD `80e0b51c9e`. Paths below are relative to
+`codex-rs/` unless stated otherwise.
 
 ### 3.1 The TUI already runs the app-server in-process
 
-The TUI does **not** link `codex-core` directly any more. `tui/Cargo.toml`
-depends on `codex-app-server-client`, `codex-app-server-protocol` and
-`codex-app-server-daemon`. It starts an embedded app-server:
+The reusable foundation is `InProcessAppServerClient`: it runs the existing
+app-server on Tokio tasks with bounded in-memory channels and typed requests,
+notifications and server requests. The GUI uses that path rather than linking
+directly to core or implementing another protocol adapter.
 
-- `app-server-client/src/lib.rs:328` `InProcessAppServerClient` with
-  `start`, `request_typed`, `notify`, `next_event`,
-  `resolve_server_request`, `reject_server_request`, `shutdown`.
-- `app-server/src/in_process.rs:1-38`: "runs the existing `MessageProcessor`
-  and outbound routing logic on Tokio tasks, but replaces socket/stdio
-  transports with bounded in-memory channels." Requests are typed
-  `ClientRequest` values; notifications and server requests arrive typed and
-  boxed (`AppServerEvent::ServerNotification(Box<ServerNotification>)`).
-  Only responses travel through a JSON-RPC result envelope
-  (`serde_json::Value` → typed decode), which is a handful of small
-  conversions per turn.
-- `tui/src/lib.rs:321` `AppServerTarget { Embedded, LocalDaemon, Remote }`.
-  Embedded is the default; the daemon is opt-in.
-- `tui/src/app_server_session.rs:323` `AppServerSession` is a typed wrapper:
-  `start_thread`, `fork_thread`, `thread_read`, `turn_start`,
-  `turn_interrupt`, `turn_steer`.
-- `tui/src/app/startup.rs:1238-1325` is the main `select!` loop over UI
-  events and `app_server.next_event()`.
-- `exec/src/lib.rs:22` uses the same client. `thread-manager-sample/` shows
-  the alternative of driving `codex_core::ThreadManager` directly.
-
-**This is the architecture for the GUI.** Same process, same Tokio runtime,
-same typed protocol, zero sockets. We get every RPC the official desktop app
-uses, maintained upstream, and we never re-implement event mapping,
-approvals, config editing, Bedrock setup, thread listing or history
-projection.
+The original plan described embedded mode as the TUI default. By the recorded
+implementation, the TUI normally used a shared local daemon; the GUI still
+embeds its own server. Connecting the GUI to that daemon is optional. Separate
+servers cannot both hold the active writer for the same thread.
 
 ### 3.2 Multi-thread is native to the app-server
 
-- One `Arc<ThreadManager>` per process (`app-server/src/message_processor.rs:336`).
-- One connection subscribes to many threads; notifications carry
-  `thread_id`. Per-connection subscription state in
-  `app-server/src/thread_state.rs`.
-- RPCs: `thread/start|resume|fork|list|read|loaded/list|archive|
-  inject_items|queue/*`, `turn/start|steer|interrupt`, `review/start`.
-- Notifications: `thread/started`, `turn/started|completed`,
-  `item/started|completed`, `item/agentMessage/delta`,
-  `item/reasoning/*Delta`, `item/commandExecution/outputDelta`,
-  `thread/tokenUsage/updated`, `turn/diff/updated`, `turn/plan/updated`.
-- Server requests (approvals): `item/commandExecution/requestApproval`,
-  `item/fileChange/requestApproval`, `item/tool/requestUserInput`,
-  `mcpServer/elicitation/request`, `item/permissions/requestApproval`.
-
-Tabs map 1:1 to threads over a single in-process connection.
+One connection can subscribe to many threads. Thread identifiers route
+streaming messages, tool events, approvals, plans, diffs and usage updates to
+the correct tab. Start, resume, fork, queue, steer, interrupt and review all
+reuse the existing protocol.
 
 ### 3.3 History is already on disk and paginated
 
-- Rollouts: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`
-  (optionally `.jsonl.zst`), JSONL of `RolloutLine` (`history/src/lib.rs:361`).
-- `ThreadHistoryMode::Paginated` (`protocol/src/protocol.rs:753`): UI history
-  is served from a SQLite projection (`thread-store/src/local/thread_history*.rs`,
-  `thread_history_1.sqlite`) via `thread/turns/list` and `thread/items/list`.
-  Model context is rebuilt by a reverse scan to the last compaction
-  (`thread-store/src/local/model_context.rs:28-36`).
-- The TUI loads 5 turns initially and pages 100 items at a time
-  (`tui/src/app_server_session/history.rs:30-32`,
-  `tui/src/app/history_pagination.rs`), and caps per-thread replay buffers
-  (`tui/src/app/thread_event_buffer.rs`: 4 KiB delta coalescing, 256 KiB cap).
-- Thread listing: `thread/list` is cursor-paginated, filesystem scan with
-  SQLite read-repair (`rollout/src/list.rs`, `MAX_SCAN_FILES=10000`).
-
-So "keep most of the context on disk" is already how Codex works. The GUI's
-job is to not duplicate it in UI memory.
+Rollouts persist under `$CODEX_HOME/sessions`; a SQLite projection serves
+paginated thread history. The GUI initially loads a small recent window and
+requests older items on demand. It bounds its own display data; core's model
+context remains a separate memory cost.
 
 ### 3.4 Amazon Bedrock is built in
 
-- Crate `aws-auth`: SigV4 signing (`signing.rs`), SDK default credential
-  chain incl. profiles and SSO (`config.rs`), `discover_aws_profiles()` and
-  `validate_aws_profile()` (`discovery.rs`).
-- Crate `model-provider/src/amazon_bedrock/`: `BedrockSigV4AuthProvider`,
-  auth source precedence (command bearer → `aws.credential_export` →
-  `aws.profile` → Codex-managed keys → `AWS_BEARER_TOKEN_BEDROCK` → env
-  access keys → SDK chain), auth refresh via `aws sso login`.
-- Two built-in providers (`model-provider-info/src/lib.rs`):
-  `amazon-bedrock` (Mantle, `https://bedrock-mantle.{region}.api.aws/openai/v1`,
-  SigV4 service `bedrock-mantle`) and `amazon-bedrock-runtime`
-  (`https://bedrock-runtime.{region}.amazonaws.com/openai/v1`). Both
-  `WireApi::Responses`.
-- Model catalog is static (`catalog.rs`, `runtime_catalog.rs`); there is no
-  `ListFoundationModels` call yet (`app-server/.../bedrock_setup.rs:127` TODO).
-- App-server RPCs: `account/bedrock/discover`, `account/bedrock/setup`
-  (`{type:"profile",profile,region}` or `{type:"environment",region}`),
-  `account/bedrock/checkGovCloudRequirements`; login variants
-  `amazonBedrock{apiKey,region}` and `amazonBedrockAccessKeys`.
-- The TUI already has a Bedrock onboarding wizard (`tui/src/onboarding/bedrock.rs`).
+Codex already provides SigV4, the AWS credential chain, profile discovery,
+SSO support, Bedrock login/setup RPCs and two Responses-API providers:
+`amazon-bedrock` (Mantle) and `amazon-bedrock-runtime`.
 
-Config shape the GUI will write:
-
-```toml
-model_provider = "amazon-bedrock"          # or "amazon-bedrock-runtime"
-model = "openai.gpt-5.6-luna"
-
-[model_providers.amazon-bedrock.aws]
-profile = "my-profile"                     # optional; else SDK chain / env
-region  = "us-west-2"                      # optional; else SDK / env
-```
+The GUI reuses these facilities. The catalog is static, and setup RPC support
+is asymmetric: Mantle uses Bedrock setup; Runtime needs configuration writes.
+Provider changes require an embedded-server restart to rebuild the model catalog.
 
 ### 3.5 Config is typed, layered, schema'd, and editable over RPC
 
-- `config/src/config_toml.rs:166` `ConfigToml` (~120 top-level keys).
-- Layer stack with per-key origins (`config/src/loader/`), precedence:
-  packaged defaults < MDM < system < enterprise < user < profile < project <
-  session flags < managed.
-- JSON schema: `core/config.schema.json` (7.9k lines), generated by
-  `codex-write-config-schema` (`config/src/schema.rs:279`
-  `config_schema_json()`). This is the complete key list.
-- RPCs: `config/read` (effective config + origins + layers),
-  `config/value/write` (`key_path`, `value`, `merge_strategy`,
-  `expected_version`), `config/batchWrite` (`reload_user_config` hot-reloads
-  most settings into live threads), `configRequirements/read`,
-  `config/mcpServer/reload`. Writes use `toml_edit` and preserve formatting.
-- The TUI writes config via `ClientRequest::ConfigValueWrite`
-  (`tui/src/app/background_requests.rs:1247`).
-
-A schema-driven settings pane is therefore mostly a renderer over
-`config/read` + `config.schema.json` with `config/value/write` on change.
+The configuration schema, effective values, origins, managed requirements and
+versioned writes already exist. Settings can therefore render existing data
+rather than maintain another configuration model. Writes must respect layer
+precedence, policy restrictions and concurrent edits.
 
 ### 3.6 Multi-agent today: one tree per root thread
 
-- v1 `multi_agent` (on by default): `spawn`, `send_input`, `wait`,
-  `close_agent`, `resume_agent` (`core/src/tools/handlers/multi_agents/`).
-- v2 `multi_agent_v2` (off by default): `spawn_agent`, `send_message`,
-  `followup_task`, `wait_agent`, `list_agents`, `interrupt_agent`.
-- `ext/agent-message-board`: channels/threads/posts in SQLite, gated behind
-  `agent_message_board` + `multi_agent_v2`; membership is one agent tree.
-- `Op::InterAgentCommunication` and `RolloutItem::InterAgentCommunication`
-  persist agent-to-agent messages.
-- **Two independent root threads cannot message each other through agent
-  tools today**: `ensure_agent_known` rejects targets outside the caller's
-  tree (`core/src/agent/control/api.rs:100-160`). Cross-thread input exists
-  only client-side: `turn/start`, `thread/inject_items`, `thread/queue/add`
-  accept any thread id.
-- `app-server/src/dynamic_tools.rs` + `DynamicToolCallRequest` /
-  `Op::DynamicToolResponse` let a client register tools the agent can call
-  and the client answers.
-
-Section 5.6 uses the last two facts to deliver cross-tab messaging without
-core changes.
+Codex's agent tools and message board coordinate agents within one root tree;
+they do not connect unrelated root threads. Client-registered dynamic tools
+and thread queues supply the missing cross-tab route without changing core.
+The optional extension of the upstream message board was not implemented.
 
 ### 3.7 Other reusable pieces
 
-- Workspace already has `arboard` (clipboard), `image`, `pulldown-cmark`,
-  `diffy`, `similar`, `webbrowser`, `tokio`, `tracing`, `toml_edit`.
-- `codex-file-search` + RPC `fuzzyFileSearch/*` for `@` mentions.
-- RPCs `fs/readFile`, `fs/writeFile`, `fs/readDirectory`, `fs/watch`,
-  `fs/changed` for the file viewer.
-- `arg0` crate: multicall dispatch (`codex-linux-sandbox`, `apply_patch`
-  sentinels), `.env` loading, PATH shim dir, Tokio runtime bootstrap
-  (`arg0/src/lib.rs:60,219`).
-- Release pipelines: `rust-release.yml` (macOS DMG, signing, notarization),
-  `rust-release-windows.yml` (MSVC, trusted signing), bundles per binary.
-- Toolchain 1.95.0, edition 2024, `[profile.release]` thin LTO.
-
----
+Reuse workspace clipboard, image, Markdown, diff, file-search, filesystem,
+logging and async libraries. `arg0` supplies helper dispatch and environment
+setup. Existing release machinery supplies platform conventions, while the
+GUI has its own workflow. The implementation uses Rust 1.95/edition 2024 and
+Slint 1.18.1.
 
 ## 4. Why Slint, and how
 
 ### 4.1 Slint facts (1.18.1, September 2026)
 
-- Rust-native declarative UI, compiled `.slint` files via `slint-build` in
-  `build.rs`. MSRV 1.92 (we are on 1.95).
-- Backends/renderers: `winit` (default on all platforms since 1.16) with
-  `renderer-femtovg` (OpenGL), `renderer-femtovg-wgpu` (Metal / Vulkan /
-  D3D12 via wgpu), `renderer-skia` (heavy), `renderer-software` (pure CPU,
-  no deps), experimental `renderer-vello`. Selection order skia → femtovg →
-  software, overridable with `SLINT_BACKEND=winit-software`.
-- Software renderer limits: no rotation/scaling, no drop shadows, limited
-  border-radius clipping. (Correction: with `std` it shapes text with parley,
-  so it is not limited to western scripts; that limit applies only to
-  embedded bitmap fonts.)
-- `TextEdit`/`TextInput`: multi-line, mouse selection, cut/copy/paste,
-  undo/redo (1.14+), `read-only` keeps selection enabled, `set-selection-offsets`,
-  `select-all`, cursor callbacks. AccessKit exposes text and selection.
-- `StyledText` + `@markdown()` (1.16+): inline bold, italic, strike, inline
-  code, links with `link-clicked`, lists, `<u>`, `<font color>`. **Not**
-  supported: headings, fenced code blocks, tables, block quotes, images,
-  rules. Not selectable. (Correction: `@markdown` is compile-time; runtime
-  text uses `slint::StyledText::from_markdown`, which errors on unsupported
-  constructs and stray `<tags>`.)
-- `ListView` instantiates only visible rows (1.16+), handles varying item
-  heights; custom `Model` implementations give lazy `row_data`.
-- Threading: event loop on the main thread; background threads call
-  `slint::invoke_from_event_loop` / `Weak::upgrade_in_event_loop`;
-  `slint::Timer` for ticks.
-- License: `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`.
-  The royalty-free license covers desktop applications at no cost and has no
-  source obligation, but **attribution is mandatory** (the `AboutSlint` widget
-  in an About dialog reachable from the top-level menu, or a public badge).
-  See risk R6 and section 12.
+Slint supplies compiled declarative UI, native text editing, virtualized lists,
+accessibility integration and both GPU and CPU renderers. Flat surfaces and
+simple geometry keep the UI compatible with software rendering; Skia was
+excluded for build and size costs.
+
+Two constraints shape the design:
+
+- `StyledText` handles inline formatting but is not selectable and does not
+  implement full Markdown. Block parsing and selectable text views remain
+  application responsibilities. Runtime text uses `StyledText::from_markdown`;
+  `@markdown` is compile-time only.
+- Slint's event loop must own the main OS thread, especially on macOS.
+
+The original claim that software rendering only shapes western scripts was
+incorrect for desktop builds with `std`; that restriction concerns embedded
+bitmap fonts. Font fallback and missing symbols still need platform testing.
+
+Slint dependencies use Royalty-free 2.0 exceptions in `deny.toml`. Attribution
+is mandatory and is supplied by `AboutSlint` in Help › About.
 
 ### 4.2 Renderer strategy
 
-| Situation | Renderer | Notes |
-|---|---|---|
-| macOS | femtovg-wgpu (Metal) or femtovg (OpenGL) | Always has a GPU path. |
-| Windows with GPU | femtovg-wgpu (D3D12) | |
-| Windows without GPU (AVD) | femtovg-wgpu on D3D12 **WARP** software adapter, fall back to `renderer-software` | WARP gives full-quality text with no GPU. Spike item S3 verifies wgpu picks WARP. |
-| Linux | femtovg (GL) or software | |
+| Choice | Delivered behavior |
+|---|---|
+| Auto | Explicitly selects FemtoVG OpenGL, chosen for measured CPU efficiency; Slint can fall back when the OpenGL probe fails. |
+| Software | Pure CPU rendering, with the lowest measured memory footprint. |
+| GPU | FemtoVG WGPU on Metal, Vulkan or D3D12; the app enables CPU adapters so Windows WARP is eligible. |
 
-Design the UI inside the software renderer's constraints (flat surfaces, no
-shadows, no rotated elements) so the two paths look identical. Skia is
-excluded: C++ build, large binary. Expose "Force software rendering" in
-settings (sets `SLINT_BACKEND` before init).
+CLI options override saved preferences; `SLINT_BACKEND` can override Slint's
+selection. Renderer changes require restarting the process. Linux additionally
+relaunches with software rendering after a window-show failure. Windows lacks
+that late-failure recovery; explicit software mode is the workaround.
+GPU-less Windows software-versus-WARP measurements remain outstanding.
 
 ### 4.3 Threading model
 
-```
-main OS thread                      Tokio multi-thread runtime (N workers)
-┌──────────────────────┐            ┌─────────────────────────────────────┐
-│ Slint event loop     │  UiBatch   │ bridge task: drains                 │
-│ winit window         │◄───────────│   client.next_event()               │
-│ Slint models/props   │ invoke_    │   coalesces deltas per ~16 ms       │
-│ callbacks → commands │ from_event │   pushes UiBatch to UI thread       │
-│                      │ _loop      │                                     │
-│                      │  GuiCommand│ request tasks: client.request_typed │
-│                      │───────────►│ in-process app-server + codex-core  │
-│                      │ mpsc       │ (all threads/agents live here)      │
-└──────────────────────┘            └─────────────────────────────────────┘
-```
+The main thread owns Slint and all UI state. Tokio runs the embedded server,
+I/O and requests. A dedicated event pump drains server events, merges text
+deltas and normally delivers one UI batch per 16 ms frame. Requests cannot
+block event draining; dropped notifications trigger a state resync.
 
-- UI thread never blocks on I/O. Slint callbacks only push a `GuiCommand`
-  onto an unbounded `tokio::sync::mpsc`.
-- The bridge task batches everything destined for the UI into one
-  `UiBatch` per frame budget, then a single `invoke_from_event_loop`. Deltas
-  for the same item are concatenated before crossing. This keeps the
-  in-process event channel drained (the runtime drops notifications under
-  saturation and reports `Lagged`).
-- `arg0` today spawns a `codex-main` thread with the Tokio runtime and
-  blocks the real main thread joining it (`arg0/src/lib.rs:219`). Slint
-  needs the real main thread (AppKit). Add
-  `arg0_dispatch_or_else_keep_main_thread(...)`: same `.env` + PATH-shim +
-  multicall handling, but it builds the runtime on background threads,
-  returns `(Arg0DispatchPaths, tokio::runtime::Handle)` and leaves the main
-  thread to the caller. Small, additive change to `arg0`.
-
----
+An additive `arg0_dispatch_or_else_keep_main_thread` entry preserves helper
+dispatch while leaving the main thread to Slint. Process environment changes
+run before worker threads start. Async results use stable tab identities and
+request generations so stale responses cannot modify a different tab.
 
 ## 5. Design
 
 ### 5.1 Crate and binary
 
-- New crate `codex-rs/gui/` → package `codex-gui`, `[[bin]] name = "codex-gui"`.
-- Dependencies: `codex-app-server-client`, `codex-app-server-protocol`,
-  `codex-app-server-daemon` (optional daemon/remote), `codex-arg0`,
-  `codex-config` + `codex-app-server-client::legacy_core::config` for
-  startup `Config`, `codex-protocol`, `slint`, `slint-build`,
-  `pulldown-cmark`, `arboard`, `tokio`, `tracing`, `serde_json`.
-- `main.rs`: `arg0_dispatch_or_else_keep_main_thread` → `codex_gui::run_main`.
-  Keep `codex` (the multitool) free of Slint; optionally add `codex gui`
-  later as a thin exec of the sibling `codex-gui` binary.
-- Windows: `#![cfg_attr(windows, windows_subsystem = "windows")]` so no
-  console flashes. The `apply_patch` shim invokes `codex_self_exe` with a
-  sentinel; piped stdio still works without a console. Verify in spike S5.
-- Bazel: add `BUILD.bazel` with `codex_rust_crate`; `slint-build` runs as a
-  cargo build script, so confirm `rules_rs` build-script support, then
-  `just bazel-lock-update`. Cargo remains the source of truth.
-- Release: add `codex-gui` to the macOS `primary` bundle (DMG) and the
-  Windows `primary` bundle in the release workflows. Later.
+`codex-rs/gui` builds the `codex-gui` binary and its library. Rust owns runtime,
+state and protocol integration; `ui/` contains Slint components. Backend and
+session wrappers concentrate protocol access. The existing `codex` binary
+remains independent of Slint; a `codex gui` launcher was not added.
 
-Source layout:
-
-```
-codex-rs/gui/
-  Cargo.toml  build.rs  BUILD.bazel
-  ui/
-    app.slint            # window, tab strip, sidebar, panes
-    transcript.slint     # virtualized transcript list + block components
-    composer.slint       # TextEdit composer, attachments, popups
-    approvals.slint      # approval cards, user-input prompts
-    settings/*.slint     # schema-driven settings, bedrock, mcp, etc.
-    theme.slint          # tokens; flat, software-renderer-safe
-  src/
-    main.rs              # arg0 keep-main-thread, run_main
-    app.rs               # AppState: tabs, thread registry, UI model wiring
-    bridge.rs            # tokio <-> slint batching
-    session.rs           # typed RPC wrapper (port of tui app_server_session)
-    transcript/          # block store, markdown -> blocks, sliding window
-    composer.rs          # mentions, slash equivalents, image paste
-    settings/            # schema loader, form model, bedrock pane
-    files.rs             # file viewer tabs
-    xtab.rs              # cross-tab messaging (dynamic tool + queue)
-    keymap.rs            # shortcuts
-```
+Windows uses the GUI subsystem and retains patch/sandbox helper dispatch.
+Cargo is the verified build path. A Bazel target exists, but dependency-lock
+regeneration and build verification remain open. Distribution uses a separate
+GUI workflow and packages the helpers required by core (§12.3).
 
 ### 5.2 Window layout
 
-```
-┌ codex-gui ──────────────────────────────────────────────────────────────┐
-│ [≡] │ ● repo-a: refactor auth │ ○ repo-b: tests │ ⚠ repo-a #2 │ + │ ⚙  │  tab strip
-├─────┼───────────────────────────────────────────────────────────┬───────┤
-│ S   │ transcript (virtualized, sliding window)                  │ info  │
-│ i   │  ┌ user ───────────────────────────────┐                  │ cwd   │
-│ d   │  │ ...                                 │                  │ model │
-│ e   │  └─────────────────────────────────────┘                  │ tokens│
-│ b   │  ┌ agent ──────────────────────────────┐                  │ diff  │
-│ a   │  │ StyledText paragraph                │                  │ agents│
-│ r   │  │ ┌ code (read-only TextEdit) ──────┐ │                  │ plan  │
-│     │  │ └─────────────────────────────────┘ │                  │ queue │
-│ thr │  │ ▸ exec `cargo test` ✓ 2.1s  [output]│                  │       │
-│ eads│  └─────────────────────────────────────┘                  │       │
-│ by  │  ┌ approval: run `rm -rf target`? [Allow] [Deny] [Always] │       │
-│ cwd ├───────────────────────────────────────────────────────────┤       │
-│     │ composer (TextEdit): mouse select/cut/paste, @, /, images │       │
-│     │ [model ▾] [effort ▾] [approvals ▾] [plan] [send]          │       │
-└─────┴───────────────────────────────────────────────────────────┴───────┘
-```
+The window combines a tab strip, thread sidebar, central transcript and
+composer, and an optional information pane. Narrow windows use drawers.
+Tabs cover threads, files/diffs, Settings and the New Tab page.
 
-- **Tab strip**: tab = thread (or a file view, or settings). Status glyph:
-  idle / streaming / awaiting approval / error. Unread dot on background
-  activity. Ctrl/Cmd+T new, Ctrl/Cmd+W close, Ctrl+Tab cycle, drag to
-  reorder, middle-click close, right-click: rename, fork, archive, move to
-  new window (later), copy thread id.
-- **New tab** picks a folder (last used, recent list, or picker) then
-  `thread/start` with that `cwd`. No projects; the sidebar groups threads by
-  `cwd` from `thread/list`.
-- **Sidebar**: thread list (paginated `thread/list`, search, archived
-  toggle), collapsed to icons by default.
-- **Info pane** (collapsible): model/effort/provider, token usage
-  (`thread/tokenUsage/updated`), turn diff (`turn/diff/updated`), plan
-  (`turn/plan/updated`), sub-agents, queued messages (`thread/queue/*`).
-- **Composer**: Slint `TextEdit` gives the mouse editing the TUI lacks.
-  Enter sends, Shift+Enter newline (configurable). `@` opens fuzzy file
-  search (`fuzzyFileSearch/session*`), `/` opens the command palette
-  (section 6), image paste via `arboard` → `UserInput::LocalImage`.
-  Esc interrupts (`turn/interrupt`). Typing while streaming steers
-  (`turn/steer`) or queues (`thread/queue/add`), user's choice in settings.
+A new thread begins with a folder and trust check. Tabs show activity and
+unread state, support dragging and overflow navigation, and expose lifecycle
+actions through menus. The sidebar groups saved threads by folder and provides
+search, paging and archive management.
+
+The composer supports mouse editing, attachments, file and skill mentions,
+a slash palette, model/effort/permission choices and Plan mode. Enter sends by
+default, Shift+Enter inserts a newline, and busy-thread input either steers or
+queues according to the user's preference.
 
 ### 5.3 Transcript: blocks, sliding window, streaming
 
-**Block model.** Each `ThreadItem` becomes one or more `Block`s:
+Markdown is parsed into paragraphs, headings, lists, quotes, code, tables and
+rules. Reasoning, commands, file changes, tools, sub-agents, plans and notices
+use dedicated cards. Only visible rows are instantiated.
 
-| Item | Blocks |
-|---|---|
-| UserMessage | one `Paragraph` per paragraph + attachments |
-| AgentMessage | markdown → `Paragraph(StyledText markup)`, `Heading`, `CodeBlock(lang, text)`, `Table(rows)`, `Quote`, `Rule`, `ListBlock` |
-| Reasoning | collapsed `Reasoning` block (summary), expandable |
-| CommandExecution | `Exec{cmd, status, duration}` + collapsible `Output` (ANSI stripped, tail-limited) |
-| FileChange | `Patch{files, +/-}` + per-file diff blocks |
-| McpToolCall / DynamicToolCall / WebSearch / ImageGeneration | compact tool cards |
-| CollabAgentToolCall / SubAgentActivity | agent cards linking to the sub-agent view |
-| Plan / ContextCompaction / errors | status blocks |
+Completed content forms a stable region while a small mutable tail streams.
+Long code and output are chunked or display-limited to avoid relaying out one
+growing block. Older rows are trimmed under per-tab limits and fetched again
+when needed; background tabs retain a smaller tail.
 
-Markdown → blocks uses `pulldown-cmark` (already a dependency). Paragraph
-inline content is passed as CommonMark source to `StyledText` via
-`@markdown`, since its subset (bold/italic/code/links/lists) is exactly the
-inline subset. Code blocks render as read-only monospace `TextEdit` so they
-are selectable and copyable. Tables render as a grid of `Text`.
-
-**Virtualization.** The transcript is a `ListView` over a custom
-`slint::Model` (`TranscriptModel`) whose `row_data(i)` materializes a block
-from the per-tab `BlockStore` on demand. Only visible rows exist as Slint
-elements. `BlockStore` keeps:
-
-- hot blocks: fully parsed, near the viewport and the live tail;
-- cold blocks: compact `(item_id, kind, byte_len, est_height)`; content is
-  re-fetched via `thread/items/list` by item id range when scrolled to;
-- a monotone height estimate cache so the scrollbar is stable.
-
-Cap hot blocks per tab (default 2,000) and total hot bytes (default 8 MiB
-per tab, 64 MiB app-wide). Background tabs drop everything but the tail
-window and the metadata index.
-
-**Loading.** Open/resume a thread in `Paginated` history mode: load the
-last 5 turns (`thread/turns/list` + `thread/items/list`, same limits the
-TUI uses), render immediately, fetch older pages when the user scrolls
-within two viewports of the top. A 10k-item thread opens in constant time.
-
-**Streaming.** Port the TUI's stable-region / mutable-tail idea
-(`tui/src/streaming/controller.rs`): completed paragraphs are committed as
-immutable blocks; only the trailing unfinished paragraph is re-parsed and
-re-rendered on each batch. Deltas are coalesced per frame in the bridge.
-Exec output deltas append to a bounded ring (tail-limited, "show full
-output" opens a file-view tab backed by the full item).
-
-**Copy.** Per-block copy button, per-message "copy as markdown", "copy
-turn", "export thread as markdown" (TUI `markdown_copy` has the logic to
-port). Code blocks and the composer support native drag-select. Cross-block
-drag-select across the whole transcript is Phase 3 (risk R1).
+**Change from the plan:** the compact cold-block index, global byte cap and
+stable height cache were not built. The scrollbar reflects loaded content.
+Copy actions, export and selectable text tabs shipped; cross-block selection
+and “Copy turn” did not.
 
 ### 5.4 Approvals and server requests
 
-Server requests arrive as `AppServerEvent::ServerRequest`. Each becomes an
-inline card at the transcript tail and a badge on the tab: command approval
-(allow / deny / always for session / edit command), file change approval
-(with diff), permissions request, user-input questions (`requestUserInput`),
-MCP elicitation. Resolution calls `resolve_server_request`. Approval mode
-switcher in the composer bar maps to `TurnSettings`/`ThreadSettings`
-(approval policy + sandbox), the same thing `/permissions` does.
+Command, file-change and permission approvals, agent questions and supported
+MCP elicitations share a queued panel above the composer. Decisions return
+through the server protocol. Sub-agent requests route to an open ancestor or
+another available thread tab.
+
+Cards protect against accidental keystrokes, retain request ownership across
+tab changes, and clear stale requests after server restarts. The protocol has
+no “edit command” approval decision; declining with guidance is the substitute.
 
 ### 5.5 Settings pane
 
-Three pages:
+Settings combines curated Common controls, schema-driven All settings, a raw
+TOML editor and specialist pages. Controls show origins and managed locks;
+versioned writes detect conflicts and reload settings where supported.
 
-1. **Common** (curated): model + reasoning effort (`model/list`), provider,
-   approvals + sandbox, notifications, theme, renderer, send/steer behavior,
-   keymap. Each control is bound to a config key path.
-2. **All settings** (schema-driven): walk `config.schema.json` (embedded via
-   `include_str!` or generated at build time with `config_schema_json()`),
-   group by top-level table, render by JSON type: bool → `Switch`, enum →
-   `ComboBox`, string → `LineEdit`, number → `SpinBox`, arrays and tables →
-   expandable sub-forms or a raw TOML `TextEdit`. Show the origin layer from
-   `config/read` next to each value ("set by project .codex/config.toml",
-   "managed by MDM", read-only when the layer is not writable).
-3. **Raw TOML**: `TextEdit` over the user `config.toml` with validation on
-   save through `config/batchWrite`.
-
-Writes go through `config/value/write` with `expected_version` for
-conflict detection and `reload_user_config` so live threads pick changes up.
-Dedicated sub-pages for MCP servers (`config/mcpServer/reload`), profiles,
-skills, plugins, hooks, memories, keymap, and the AWS page below.
+Provider changes need a server restart. The raw editor checks TOML syntax,
+with semantic errors surfaced after reload. GUI-only preferences live in
+`$CODEX_HOME/gui.json`. A dedicated profiles page was not implemented.
 
 ### 5.6 AWS Bedrock page
 
-1. "Use Amazon Bedrock" toggle; endpoint choice: Mantle (`amazon-bedrock`)
-   or Runtime (`amazon-bedrock-runtime`).
-2. Profile picker populated by `account/bedrock/discover` (which uses
-   `discover_aws_profiles`), plus "environment credentials" option and
-   `AWS_BEARER_TOKEN_BEDROCK` / access keys entry (stored via the existing
-   `amazonBedrock*` login variants).
-3. Region picker (Mantle region list from `model-provider/src/amazon_bedrock/mantle.rs`,
-   runtime regions, GovCloud check via `account/bedrock/checkGovCloudRequirements`).
-4. "Validate" runs `validate_aws_profile`; "Apply" calls
-   `account/bedrock/setup`, which writes `model_provider` and
-   `model_providers.<id>.aws.{profile,region}`.
-5. Model picker from `model/list` (static catalog today). Stretch: live
-   discovery by signing a `GET {base_url}/models` with `AwsAuthContext::sign`
-   and merging the result; this also closes the `bedrock_setup.rs:127` TODO.
-6. Ollama / LM Studio page reuses `ensure_oss_provider_ready` and the
-   `fetch_models` / `pull_model_stream` clients for local models.
+The Providers page selects Mantle or Runtime, discovers AWS profiles, accepts
+other supported credentials, chooses a region, validates local profiles and
+applies configuration. GovCloud checks are advisory. Models come from the
+server's static catalog; live discovery is deferred.
+
+The same page detects Ollama and LM Studio, lists local models and selects a
+provider/model. Ollama downloads have progress and cancellation; LM Studio
+downloads and automatic loading are absent.
 
 ### 5.7 Inter-agent messaging across tabs
 
-Phase 1 (no core changes):
+GUI-created threads can register dynamic tools to list tabs, send messages
+with an optional reply wait, and read their mailbox. Delivery goes through the
+target's durable queue and starts a turn with that target's permissions.
 
-- **User-forwarded**: select a block or message, "Send to tab…". Delivered
-  with `thread/queue/add` (durable, dispatched when the target is idle) or
-  `turn/start` if the user wants it now. Prefixed with provenance
-  (`[from tab "repo-a: refactor auth", thread <id>]`).
-- **Agent-initiated**: the GUI registers dynamic tools on every thread it
-  starts (`ThreadStartParams.dynamic_tools`): `list_open_threads()`,
-  `send_message_to_thread(target, message, wait_for_reply: bool)`,
-  `read_thread_mailbox()`. The agent's `DynamicToolCallRequest` is answered
-  by the GUI: it resolves the target tab, enqueues the message in the
-  target via `thread/queue/add` (or `thread/inject_items` for non-turn
-  context), records it in a GUI-side mailbox (SQLite in `CODEX_HOME`, same
-  shape as `InterAgentCommunication`), and returns the delivery receipt.
-  Replies route back through the same tool. User can inspect every
-  cross-tab message in the info pane and disable the feature per tab.
+Agent messages require receiving-tab consent, except for sender/target pairs
+the user allowed for the session. Permission escalation and long message
+chains still require confirmation. Provenance, loop limits and wait-cycle
+detection constrain coordination. Users can also edit and forward a whole
+reply through “Send to tab…”.
 
-Phase 3 (optional, upstream-friendly): extend `agent-message-board`
-membership to a user-scoped "workspace" so root threads share a board, and
-let `send_message` resolve any loaded root thread. Keep this separate and
-small so it can be upstreamed.
+The delivered mailbox is a bounded JSONL log, not the proposed SQLite store.
+No upstream agent-message-board extension or non-turn context injection was
+needed. Detailed behavior and limits are in §12.2.6.
 
 ### 5.8 File viewer
 
-Tab kind `File`: `fs/readFile` into a read-only monospace `TextEdit`
-(selectable, copyable, wrap toggle), `fs/watch` for live reload, Ctrl+F
-find, line numbers in the gutter. Opened from file citations in agent
-output, from patch cards, and from "open file" in the sidebar. Large files
-are chunked (first 2 MiB, "load more"). Diff viewer: unified diff from
-`turn/diff/updated` / `item/fileChange` rendered as colored blocks using
-`similar` for intra-line highlights.
+Read-only file tabs provide selection, line numbers, find, go to line, wrapping,
+reload and chunked loading. File links and patch cards open the appropriate
+view. Unified diff tabs provide file collapse, change counts, line numbers
+and word-level highlights. Neither viewer adds syntax highlighting.
+
+Remote file operations go through the server. Local external-open actions
+confirm before launching a program; remote files cannot be revealed or opened
+by the local OS.
 
 ### 5.9 Sub-agents
 
-`CollabAgent*` and `SubAgentActivity` items render as agent cards. The info
-pane lists children (`agent-graph-store` edges via `thread/read`). Clicking
-opens the child thread in a nested view or a new tab (`thread/resume` on the
-child id), the GUI analogue of `/agents` and `/subagents`.
+Transcript cards and the information pane show child agents, status and recent
+messages. Selecting an agent opens its thread in another tab. A nested agent
+view was not implemented.
 
 ### 5.10 Daemon and remote (opt-in only)
 
-Default `AppServerTarget::Embedded`, no socket, no port. Settings offer
-"Connect to local daemon" (`connect_local_daemon`, shares threads with the
-TUI and `codex agents`) and "Connect to remote app-server" (`ws://`, UDS)
-for driving a machine over a tailnet. Off by default to honor the
-single-binary, no-port goal.
+Embedded mode remains the default. The GUI can connect to a local Unix-socket
+daemon or a WebSocket app-server. It does not start or manage a daemon.
 
----
+Connection settings apply on the next launch or recovery retry. WebSocket
+workspaces use server-side paths and search, and inline image attachments.
+Authentication tokens come from named environment variables and are refused
+over non-loopback plaintext WebSocket connections.
 
 ## 6. Feature parity checklist (TUI slash commands → GUI)
 
-From `tui/src/slash_command.rs`. "RPC" names the app-server method where known.
+This is a capability map, not a promise that every TUI command appears in the
+GUI palette. Menus, Settings and the information pane supply some equivalents.
 
-| TUI | GUI affordance |
+| TUI feature | Delivered GUI equivalent and important limits |
 |---|---|
-| `/model` | Composer model/effort dropdown (`model/list`) |
-| `/permissions` | Composer permissions picker: Read only, Auto, Auto-review (`approvalsReviewer: auto_review`, shown when the `guardian_approval` feature is on and requirements allow it), Full access (asks for confirmation first) |
-| `/approve` | `/approve` palette entry: confirms and approves one retry of the newest auto-review denial (`thread/approveGuardianDeniedAction`); run again for older denials |
-| `/setup-default-sandbox` | Settings › Approvals; elevated setup wizard |
-| `/new`, `/clear` | New tab (Ctrl/Cmd+T), folder picker |
-| `/resume` | Sidebar thread list (`thread/list`), search |
-| `/fork`, `/side`, `/btw` | Tab menu › Fork; "ephemeral fork" opens a scratch tab |
-| `/rename`, `/archive`, `/delete` | Tab context menu (`thread/archive`, delete RPC) |
-| `/compact`, `/recap` | Tab menu › Compact / Recap |
-| `/review` | Review button (`review/start`) with target picker |
-| `/plan` | Plan toggle in composer; plan pane (`turn/plan/updated`) |
-| `/diff` | Info pane diff; full diff tab |
-| `/mention` | `@` popup (`fuzzyFileSearch/*`) |
-| `/status`, `/usage`, `/debug-config` | Info pane; Settings › Diagnostics (config layers, requirements) |
-| `/mcp`, `/apps`, `/plugins`, `/skills`, `/hooks`, `/memories` | Settings sub-pages; MCP OAuth login buttons |
-| `/init` | Tab menu › Create AGENTS.md |
-| `/goal` | Goal field in info pane |
-| `/agents`, `/subagents` | Sub-agent cards and info pane list |
-| `/copy`, `/export` | Copy buttons; Export thread as Markdown |
-| `/cd`, `/pwd` | Tab's cwd shown in tab + info pane; change via folder picker |
-| `/worktree` | Tab menu › Continue in worktree (`codex-worktree`) |
-| `/keymap`, `/vim` | Settings › Keymap (no vim mode in GUI composer initially) |
-| `/experimental` | Settings › Features (feature flags) |
-| `/theme` | Settings › Appearance (light/dark/system; no syntax themes) |
-| `/import` | Settings › Import from Claude Code |
-| `/logout`, login | Settings › Account (ChatGPT, API key, Bedrock) |
-| `/ps`, `/stop` | Info pane › Background terminals |
-| `/voice` | Deferred; `realtime-webrtc` exists but out of scope for MVP |
-| `/daemon` | Settings › Connection (section 5.10) |
-| `/feedback`, `/warnings` | Help menu; warnings banner |
-| `/quit` | Close window; confirm when turns are running |
-| `/ide`, `/app`, `/tui`, `/raw`, `/title`, `/statusline`, `/pets`, `/daybreak` | Not applicable or cosmetic; skip |
+| `/model` | Composer model and supported-effort pickers; Common sets defaults for new threads. |
+| `/permissions`, `/approvals` | Permission presets, including policy-gated Auto-review; Full access asks for confirmation. |
+| `/approve` | Confirm one retry of an observed auto-review denial; only recent in-memory denials are available. |
+| `/setup-default-sandbox` | Settings › Windows sandbox, including elevated setup and standard fallback; no palette entry. |
+| `/new`, `/clear` | Immediately create a thread in the current folder; `/new <name>` also names it. |
+| `/resume` | Searchable, paginated sidebar with archived threads. |
+| `/fork`, `/side`, `/btw` | Whole-thread forks and ephemeral side chats; no “fork from here”. |
+| `/rename`, `/archive`, `/delete` | Rename/archive through tab and sidebar actions; Delete exists only in the sidebar. |
+| `/compact`, `/recap` | Compaction and a bounded recap generated by a temporary read-only thread. |
+| `/review` | Target picker for working changes, branch, commit or custom instructions. |
+| `/plan` | Composer toggle, proposed-plan content and progress in the info pane. |
+| `/diff` | Turn-diff tab and Changes summary; this is the server's turn diff, not a complete working-tree Git diff. |
+| `/mention` | `@` file search, local or server-side according to the connection. |
+| `/status`, `/usage`, `/debug-config` | Context, usage limits and configuration diagnostics; no usage-reset action. |
+| `/mcp` | MCP status, add/remove/enable and OAuth; no dedicated edit form or full tool browser. |
+| `/apps`, `/plugins`, `/skills`, `/hooks`, `/memories` | Settings pages; `/apps` aliases Plugins, not a connector page. Authoring and memory-content viewing are absent. |
+| `/init` | Sends the bundled AGENTS.md creation prompt. |
+| `/goal` | Info-pane goal controls; no palette entry or token-budget editing. |
+| `/agents`, `/subagents` | Cards and info-pane list opening child threads; no palette entries. |
+| `/copy`, `/export` | Last reply, block/message copy, full-thread Markdown export and View as Text; no Copy turn. |
+| `/cd`, `/pwd`, `/cwd` | Folder shown in the info pane; an existing thread's folder cannot be changed, and these commands are absent. |
+| `/worktree` | Fork into a managed checkout; embedded mode only, after a first turn, while idle, with the feature enabled. |
+| `/keymap`, `/vim` | Settings › Keyboard edits 18 global actions; composer remapping and vim mode are absent. |
+| `/experimental`, `/features` | Managed-policy-aware feature switches. |
+| `/theme` | System/light/dark appearance, text size and renderer preference. |
+| `/import` | Settings imports from Claude Code and Cursor; no palette entry. |
+| `/login`, `/logout` | Account page for ChatGPT browser/device login, API keys and sign-out; other providers use Providers. |
+| `/ps`, `/stop` | Background-terminal list and stop controls; `/clean` alias is absent. |
+| `/voice` | Deferred. |
+| `/daemon` | Settings › Connection or `--remote`; connect-only, no palette entry. |
+| `/feedback`, `/warnings` | Help/Settings feedback, warning banner and diagnostics; no palette entries. |
+| `/quit`, `/exit` | Quit with confirmation and interruption of running turns; macOS system Quit also follows this path. |
+| `/ide`, `/app`, `/tui`, `/raw`, `/title`, `/statusline`, `/pets`, `/daybreak` | Not implemented: outside the chosen GUI scope or cosmetic. |
+| `/rollout`, `/test-approval`, `/debug-m-drop`, `/debug-m-update` | Debug-only TUI commands omitted; GUI automation covers request injection. |
 
-Also: images (paste/attach), ANSI exec output, notifications (desktop
-toast on approval needed / turn complete), queued messages, token usage,
-context-window gauge, onboarding/login flow.
-
----
+Also shipped: image paste/attach, platform-dependent file drops, `$` skill
+mentions, confirmed `!` shell commands, queue management, desktop notifications
+and context usage. Command output strips ANSI escapes instead of rendering
+terminal colors. Images appear as composer attachments but not inline in the
+transcript. Further limitations are recorded in §12.2 and §12.6.
 
 ## 7. Performance and memory budgets
 
-Targets, measured on a 2-vCPU, 4 GiB, no-GPU Windows VM and on an Apple
-Silicon Mac. Checked in CI where feasible (startup, idle RSS) and manually
-otherwise.
+The priorities are consistently low memory usage and immediate interaction.
+Transcript paging, virtualized rows, bounded model-search batches, cancellable
+background work and coalesced streaming must keep resident UI data bounded over
+long sessions. Repeated searches, opening/closing tabs and long streaming turns
+must not cause memory to grow indefinitely. Input, scrolling and menus should
+remain responsive; avoid decorative animations that delay interaction.
 
-| Metric | Target |
-|---|---|
-| Cold start to first frame | < 300 ms (window and tab strip appear before the embedded app-server finishes init) |
-| Cold start to usable (thread list + composer) | < 1 s |
-| Idle RSS, 1 tab | < 80 MiB |
-| Idle RSS, 10 tabs | < 200 MiB (core keeps model context per thread; UI adds < 5 MiB per background tab) |
-| Opening a 10,000-item thread | < 1 s, independent of length |
-| Streaming frame rate | 60 fps with GPU, ≥ 30 fps software at 1080p; ≤ 1 UI invoke per frame |
-| UI thread blocking | never > 8 ms per callback (all I/O on Tokio) |
-| Binary size (release, stripped) | < 60 MiB on Windows and macOS |
+Startup is already sufficient. Preserve the current behavior, but do not repeat
+startup benchmarks or measure all performance targets for every build. Run focused
+memory or latency measurements only for a suspected regression or a change that
+can affect them. Historical measurements and original aspirational budgets are
+retained in §12.4; exceeding an old binary-size or startup target does not by itself
+justify another build. No routine performance CI gate is required.
 
-Mechanisms: paginated history, hot/cold block store, delta coalescing,
-stable/tail streaming, background-tab eviction, `ListView` virtualization,
-no web view, thin LTO, software-renderer-safe visuals.
-
----
+Use targeted development checks while implementing. Run a full release build
+only once the entire requested feature set is complete and relevant checks pass.
+Release builds are slow and consume substantial disk space; do not use them as
+an edit/check loop. Skip macOS release builds and signing/notarization for now.
+After uploading completed release binaries to GitHub, verify the published assets
+and then remove local build artifacts (Cargo target directories and staging
+outputs). Preserve source changes and any files needed independently of a build.
+[`publish-release.sh`](codex-rs/gui/packaging/publish-release.sh) uploads completed
+packages to an existing release, compares GitHub’s SHA-256 digest for every asset,
+then runs `cargo clean` and removes only the exact published local packages. A
+missing or mismatched digest leaves all local artifacts in place.
 
 ## 8. Risks and mitigations
 
-| # | Risk | Mitigation |
-|---|---|---|
-| R1 | Slint `Text`/`StyledText` are not selectable; cross-block drag selection over the transcript is not provided by the toolkit. | Phase 1: selectable code blocks (read-only `TextEdit`), per-block/message/turn copy, "copy as markdown". Phase 3: custom selection layer (hit-test block rows, compute offsets via `TextInput` metrics, render highlight rectangles). If still unsatisfying, offer "open message in editor view" which is one big read-only `TextEdit`. |
-| R2 | Software renderer shapes western scripts only. | Default to femtovg-wgpu, which on Windows can run on D3D12 WARP (software) with full text shaping. Spike S3 confirms. Pure software renderer stays as last resort. |
-| R3 | `StyledText`/`@markdown` is new (1.16) and lacks headings, code blocks, tables. | We render those as separate blocks; `StyledText` only gets inline-level markup. Spike S2 validates the Rust API for building styled text at runtime. |
-| R4 | In-process event channel drops notifications under saturation (`Lagged`). | Dedicated drain task, per-frame batching, bounded exec output; on `Lagged` re-sync via `thread/read` + `thread/items/list`. |
-| R5 | `arg0` owns the main thread. | Additive `arg0_dispatch_or_else_keep_main_thread`. TUI/exec untouched. |
-| R6 | Licensing. Codex is Apache-2.0; Slint is GPLv3 OR Royalty-free-2.0 OR commercial. | Use the royalty-free license for the `codex-gui` binary (desktop app, no royalty, attribution optional). Confirm the RF 2.0 text permits an open-source non-GPL distribution; fallback is licensing only the `codex-gui` crate as GPL-3.0 while the rest of the workspace stays Apache-2.0. Decide before Phase 1. |
-| R7 | Bazel + `slint-build` build script. | Verify `rules_rs` build-script support in S5; fall back to the `slint!` macro (no build.rs) if needed. |
-| R8 | Protocol churn upstream. | We use the same app-server protocol as the official app and TUI; bump with the workspace. Keep GUI logic behind a `session.rs` wrapper like `AppServerSession`. |
-| R9 | Windows `windows_subsystem = "windows"` and the `apply_patch` shim. | S5 verifies piped stdio works; otherwise point `codex_self_exe` at a sibling `codex.exe` when present. |
-| R10 | Memory of core per thread is outside GUI control. | Expose compaction and token gauge; document that core context, not UI, dominates per-tab memory. |
-
----
+| Risk | Resolution or remaining exposure |
+|---|---|
+| R1: Non-selectable styled transcript | Copy and selectable text views shipped; cross-block selection and Copy turn remain open. |
+| R2: Software-rendering quality and GPU-less Windows | Desktop software text shaping works; OpenGL is the measured default, with software/WARP options. Windows glyphs and late fallback still need fixes. |
+| R3: Incomplete Markdown support | Parse blocks separately and use styled text only for supported inline formatting. |
+| R4: Dropped events under load | Dedicated event draining, frame batching and thread/info-pane resync after `Lagged`. |
+| R5: Main-thread ownership | Additive arg0 entry leaves the real main thread to Slint. |
+| R6: Slint licensing | Royalty-free dependency exceptions and required About attribution are in place. |
+| R7: Bazel build scripts/dependencies | Target exists; lock regeneration and verification remain open. |
+| R8: Upstream protocol changes | Workspace protocol types and backend/session wrappers keep integration changes visible at compile time. |
+| R9: Windows GUI subsystem and helper dispatch | Patch/helper dispatch works; redirected CLI output and executable resources remain incomplete. |
+| R10: Core memory outside UI control | Expose compaction and context usage; distinguish bounded UI history from core's retained state. |
 
 ## 9. Phased plan
 
 ### Phase 0: Spike (1–2 weeks). Decision gate.
 
-- S1 `codex-rs/gui` crate skeleton, Slint window, tab strip mock, builds
-  on macOS and Windows with cargo. Measure cold start and RSS.
-- S2 Start the embedded app-server with `InProcessAppServerClient` from a
-  GUI (needs the `arg0` keep-main-thread entry), `thread/start`,
-  `turn/start`, stream `item/agentMessage/delta` into `StyledText` via the
-  bridge. Validate the Rust API for `styled-text`.
-- S3 Renderers on a GPU-less Windows VM (AVD or Hyper-V without GPU):
-  femtovg-wgpu (expect WARP), pure software. Record fps, text quality, RSS.
-- S4 Virtualized `ListView` with a lazy `Model` of 50k synthetic blocks of
-  varying height; scroll smoothness, memory, scrollbar stability.
-- S5 Build plumbing: Bazel `BUILD.bazel` with `slint-build`,
-  `windows_subsystem`, `apply_patch` shim from the GUI exe.
-- Gate: S2 streams at ≥ 30 fps on software rendering with < 100 MiB RSS,
-  S4 scrolls smoothly, S6 (license) resolved.
+Validate the native shell (S1), embedded streaming (S2), GPU-less software/WARP
+rendering (S3), large virtualized history (S4), build/helper integration (S5)
+and licensing (S6). The intended gate included usable software streaming,
+smooth scrolling and a small footprint.
+
+These spikes were folded into implementation. Core architecture, streaming,
+virtualization and licensing were established, but the memory gate was missed,
+Bazel is unverified and the GPU-less renderer comparison lacks measurements.
 
 ### Phase 1: MVP (usable daily)
 
-Tabs (new/close/switch, folder-bound), thread list + resume (paginated),
-composer `TextEdit` with send/steer/interrupt, transcript blocks for
-user/agent/reasoning/exec/patch/tool items, approvals (command, file
-change, permissions, user input), model/effort picker, approvals/sandbox
-switcher, token usage, login (ChatGPT, API key), **Bedrock page**,
-Settings › Common, light/dark theme, desktop notifications, Windows +
-macOS release artifacts.
+Tabs, folder trust, history/resume, composer, transcript, approvals, model and
+permission controls, login, Bedrock, common settings, themes and notifications.
+Implemented; Windows was released first. macOS release builds are deferred.
 
 ### Phase 2: Parity
 
-Everything in section 6 not yet done: schema-driven settings, MCP / skills /
-plugins / hooks / memories pages, review, plan mode, fork, compact/recap,
-images, `@` mentions, file viewer tabs, diff tab, sub-agent cards, queued
-messages, export/copy-as-markdown, keymap editor, import from Claude Code,
-feature flags, diagnostics (config layers), onboarding flow, Linux build.
+Broader settings, MCP/skills/plugins/hooks/memories, review, plans, forks,
+recaps, attachments, file/diff viewers, sub-agents, queues, exports, shortcuts,
+imports and diagnostics. Broad coverage shipped, with the explicit gaps in §6.
 
 ### Phase 3: Killer features and polish
 
-Cross-tab agent messaging via dynamic tools (5.7), optional message-board
-extension upstream, cross-block text selection (R1), daemon/remote connect
-(5.10), worktree flow, multi-window, live Bedrock model discovery, voice if
-`realtime-webrtc` is cheap to wire, accessibility pass (AccessKit), perf CI.
-
----
+Cross-tab messaging, remote/daemon connections and worktree continuation
+shipped. Cross-block selection, multi-window, live Bedrock discovery, voice,
+custom-widget accessibility remains open. Performance checks are focused on regressions (§7). The optional
+upstream message-board extension was not pursued.
 
 ## 10. Open questions
 
-1. Royalty-free 2.0 license text vs Apache-2.0 distribution (R6).
-2. ~~Does `ThreadStartParams.dynamic_tools` exist?~~ Confirmed:
-   `v2/thread.rs:148` takes `Vec<DynamicToolSpec>` (from
-   `codex_protocol::dynamic_tools`). S2 still needs to verify the call /
-   response round trip through `DynamicToolCallRequest`.
-3. Enter-to-send vs Ctrl+Enter default. Proposal: Enter sends, Shift+Enter
-   newline, configurable.
-4. Should `codex-gui` ship inside the `codex` npm package, or as a separate
-   download? Proposal: separate asset in the same GitHub release first.
-5. Vim mode in the composer: skip for MVP; revisit if requested.
+1. **Slint licensing:** resolved through Royalty-free 2.0 and mandatory
+   attribution in Help › About.
+2. **Dynamic tool support:** confirmed end to end; the GUI answers its
+   `codex_gui` tools through app-server tool-call requests.
+3. **Send keys:** Enter sends and Shift+Enter adds a newline by default;
+   configurable in Appearance.
+4. **Distribution:** separate download assets on a fork release, initially an
+   unsigned Windows zip; no npm integration or installer.
+5. **Vim composer:** deferred until requested.
 
----
+Outstanding implementation and product decisions are consolidated in §12.6.
 
 ## 11. References
 
-- Slint: https://slint.dev, docs https://docs.slint.dev, license
-  https://slint.dev/pricing.html, StyledText
-  https://docs.slint.dev/latest/docs/slint/reference/elements/styledtext/,
-  backends https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backends_and_renderers/
-- Codex Bedrock help: https://help.openai.com/en/articles/20001253
-- Alternatives surveyed: jk-gan/agent-hub, wieslawsoltes/CodexGui,
-  3h2oto/agentx, CES-Ltd/Lumi, CodexMonitor, monocode, PKQ1688/OnlyCode,
-  fraternity-z/codex-app-plus, Nimbalyst/nimbalyst, Redminote11tech/Codex-Native.
-
----
+- [Slint](https://slint.dev), [documentation](https://docs.slint.dev),
+  [licensing](https://slint.dev/pricing.html),
+  [StyledText](https://docs.slint.dev/latest/docs/slint/reference/elements/styledtext/)
+  and [renderers](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backends_and_renderers/).
+- [Codex Bedrock help](https://help.openai.com/en/articles/20001253).
+- Alternatives and tradeoffs: §2.
+- [GUI source](codex-rs/gui), [developer README](codex-rs/gui/README.md),
+  [user guide](docs/gui.md) and
+  [release workflow](.github/workflows/rust-release-gui.yml).
 
 ## 12. Implementation status (October 2026)
 
-The crate `codex-rs/gui` builds the `codex-gui` binary. Developer notes live
-in `codex-rs/gui/README.md`; the user guide is `docs/gui.md`.
+This records the implementation and verification around commit `163153140f`;
+it is not a claim that every planned feature or budget passed. The Windows x64
+build is published and in use. The following inventory focuses on capabilities,
+important constraints and departures from the original design.
 
-### 12.1 What shipped
+### 12.1 What was asked for and what shipped
 
-| Plan item | Status |
+| Requested outcome | Recorded result |
 |---|---|
-| §4.3 threading: `arg0_dispatch_or_else_keep_main_thread`, Tokio on workers, one batched UI post per 16 ms frame with delta coalescing | Done (`arg0`, `gui/src/backend.rs`) |
-| §5.1 crate, binary, Windows subsystem, Bazel target, release workflow | Done; `.github/workflows/rust-release-gui.yml` builds unsigned artifacts that include the helpers the runtime finds next to `codex-gui` (`codex-code-mode-host`; on Windows `codex-windows-sandbox-setup` and `codex-command-runner`); the window icon is embedded from Rust (`include_bytes!`), so the Bazel compile needs no build-script paths; `MODULE.bazel.lock` still needs `just bazel-lock-update` |
-| §5.2 tabs, sidebar, info pane, composer, keyboard shortcuts (user keymap) | Done: tabs shrink, then scroll, with a tab list; drag to reorder; sidebar and info pane become drawers in narrow windows; Ctrl+Tab cycles tabs (⌃Tab on macOS) |
-| §5.3 transcript blocks, streaming (stable region + tail), paged history, hot/cold trimming, copy/export | Done |
-| §5.4 approvals (command, file, permissions, questions, MCP elicitation, sub-agent routing) | Done |
-| §5.5 settings (common, schema-driven, raw TOML, account, MCP, skills, plugins, hooks, features, appearance, diagnostics) | Done |
-| §5.6 Bedrock page (Mantle and Runtime, profiles, env, API key, access keys, GovCloud check, restart, model picker) and local models (Ollama, LM Studio) | Done; live `ListFoundationModels` discovery and LM Studio downloads not done |
-| §5.7 cross-tab messaging (dynamic tools `codex_gui.*`, queue delivery, wait-for-reply, mailbox, user forwarding) | Done; an agent's message is delivered only after the user allows it on a card in the target tab ("allow for this session" per tab pair; always asked when the target has broader permissions, and again after three hops); mailbox is JSONL (`$CODEX_HOME/gui/mailbox.jsonl`), not SQLite |
-| §5.8 file viewer and diff viewer tabs | Done |
-| §5.9 sub-agent cards and info pane list | Done |
-| §5.10 daemon / remote app-server (opt-in) | Done (`--remote unix://`, `ws://`, `wss://`; Settings › Connection). A connection that cannot be used never blocks startup: the window reports it and offers the embedded server |
-| Quit and shutdown | File › Quit, closing the window, and on macOS ⌘Q / Dock › Quit (`applicationShouldTerminate:` added to winit's delegate) confirm when turns run and shut the app-server down; logout shuts down without asking |
-| §6 slash-command parity | Done except `/voice` (deferred) and cosmetic TUI-only commands |
-| R1 cross-block selection | Fallback shipped: "View as text" opens a selectable text tab; per-block selection everywhere else |
-| Multi-window | Not done (Slint globals are per window; would need per-window controllers) |
+| Native, folder-bound, concurrent agent tabs | Shipped with embedded app-server, paged history and mouse-editable composer. |
+| Broad TUI parity and graphical settings | Shipped across the main workflows; §6 identifies partial or absent equivalents. |
+| Cross-tab agent coordination and user forwarding | Shipped through dynamic tools, receiving-tab consent/session allowances and durable queues. |
+| Software rendering / AVD use | Available and used; a controlled GPU-less software-versus-WARP benchmark is still missing. |
+| Small footprint and fast startup | Startup succeeds; idle memory and binary size exceed the original budgets. |
+| Commit, fork and publish | Commit on `feature/codex-gui`, pushed to `allquixotic/codex`; Windows zip attached to `codex-gui-v0.1.0`. |
+| Windows and macOS downloads, unsigned, zip first | Windows complete; macOS asset not attached because its release build was stopped. |
+| Record implementation and lessons | This section, supported by the source and development/user documentation. |
 
-### 12.2 Measured performance (macOS, Apple Silicon, Retina, release build)
+### 12.2 Feature inventory
 
-| Metric | Budget (§7) | Measured |
+#### 12.2.1 Process, app-server and platform integration
+
+The CLI accepts a folder, a resume thread, renderer selection, a connection
+target, an optional token-variable name and config overrides. Resume takes
+precedence over a folder. The window opens while the server starts; failure
+leaves Settings accessible and offers retry or an embedded-server fallback.
+Requested work waits for required sign-in and folder trust.
+
+Embedded startup reuses Codex configuration, policy, state storage, tracing,
+telemetry and feedback plumbing. The GUI exposes warnings, logs, diagnostics,
+notifications and version/About information. Helper dispatch occurs before UI
+startup. The app is a separate executable, not a subcommand of `codex`.
+
+Server restarts rebuild configuration and reattach ordinary threads. Threads
+without a first message may need to be recreated; side chats end. Disconnects
+and dropped events clear or resync connection-specific state. Closing busy
+tabs and quitting confirm, interrupt turns and then shut down cleanly.
+
+Preferences preserve unknown keys, recover invalid values individually and
+back up malformed JSON. They save theme, renderer, input behavior, shortcuts,
+pane visibility, recent folders, connection settings and window size. Open
+tabs, drafts, position and maximized state are not restored after app exit.
+
+Platform integration includes macOS system Quit handling and login-shell PATH
+recovery, Windows console/message-box diagnostics, and Linux font and clipboard
+handling. Remote/daemon mode has reduced local telemetry and feedback capture.
+Connection and renderer changes generally require restarting. See §12.5 for
+platform pitfalls and §12.6 for release gaps.
+
+Development hooks include `CODEX_GUI_AUTOMATION`, `CODEX_GUI_PERF`, a mock
+Responses server and `gui/dev/measure.sh`. They support scripted UI tours,
+snapshots, failure injection and startup/memory measurement.
+
+#### 12.2.2 Window, tabs, sidebar and New Tab page
+
+Tabs support drag reordering, overflow scrolling/list selection, middle-click
+close, unread/activity indicators and lifecycle menus. The OS window title is
+always “Codex”, independent of the selected tab or thread name. The sidebar provides folder grouping, search, archived history,
+paging and thread management. Folder headings have a right-aligned “+” to start
+a conversation there. Right-clicking a thread or tab offers Rename and Archive.
+Search shows title hits first, then semantic history hits from paginated user and
+assistant messages. It prefers the latest Luna (currently gpt-6-luna), preserves
+the configured provider and Bedrock profile scope, and retries with the default
+conversation model if Luna is unavailable. Replacing a query cancels background
+work and unloads temporary model sessions. New Tab offers folderless conversations
+(using the local user’s home), folders, recent locations, file
+opening and thread resume. Remote connections use a server folder browser.
+
+Folder trust is checked before thread creation and can offer restricted use.
+There are unresolved edge cases: trust-check errors rely on server defaults,
+and the server may auto-trust a writable folder even after “Open restricted”.
+Cross-OS folder browsing is constrained by the protocol's client-native
+absolute-path type.
+
+Sidebar and info panes become drawers when space is tight. Shared dialogs,
+pickers, notifications and warnings support keyboard use, and 18 global actions
+can be rebound. System/light/dark themes and text size are configurable.
+
+Limits: one window, no restored tab session, no tab-strip arrow navigation,
+and no completed accessibility pass for custom chrome. Tabs do not display
+their computed folder tooltip. Folder-collapse state is temporary. Delete is
+sidebar-only; archive confirmation differs between sidebar and tab menus.
+Windows/Linux have no dedicated quit shortcut.
+
+#### 12.2.3 Threads and the composer
+
+The composer keeps per-tab in-memory drafts, supports file/skill mentions and
+a slash palette, and accepts pasted, selected or dropped image attachments.
+Supported image formats are PNG, JPEG, GIF and WebP. Remote images are sent
+inline within a 32 MiB message budget; Wayland file drops are unavailable.
+Refused sends restore the draft. Input while working steers or queues based on
+a global preference; Escape interrupts with recovery for turn-start races.
+
+Model, effort, permissions and Plan mode are applied to the current thread
+where supported, otherwise on the next turn. Auto-review follows server
+capabilities and managed requirements. Full access and shell commands ask for
+confirmation. Recent auto-review denials can be retried through `/approve`.
+
+Lifecycle actions include rename, archive, full-thread fork, side chat,
+compaction, recap, review, worktree continuation, AGENTS.md creation, export
+and View as Text. Review supports working changes, branches, commits and
+custom instructions, with Git queries executed where the workspace lives.
+Recap uses the last eight answered exchanges available in the loaded transcript
+and a bounded, tool-free temporary thread; it is not a whole-history summary.
+
+Limits: no message-history recall, vim mode, rewind/fork-from-here or persistent
+drafts. Side chats are ephemeral, omit inherited paginated history in their
+view, and cannot be nested, archived or continued in worktrees. Worktree
+continuation requires an idle, materialized thread and the embedded server.
+Plan and permission controls depend on the connected server's capabilities.
+
+#### 12.2.4 Transcript
+
+The virtualized transcript renders user/agent Markdown, reasoning, commands,
+file changes, tools, searches, image-result notices, sub-agent activity, plans,
+hooks, errors, recaps and cross-tab messages. Links and file citations open the
+appropriate destination. Local echo, tail following and status notices make
+streaming and pending work visible.
+
+Stable completed blocks and a mutable streaming tail limit update costs.
+Per-tab caps and smaller background tails bound retained display data. History
+loads on scroll; failed pages offer explicit retry. Resync handles dropped
+events and legacy rollouts whose item IDs differ from live events.
+
+Copy works for blocks, messages and the last completed reply. Quote in reply,
+Send to tab, selectable text views and full-thread Markdown export are also
+available. Display truncation generally preserves fuller text for copying;
+a live command's full output is available only after completion.
+
+Limits: no cross-block selection, Copy turn, transcript search, syntax
+highlighting or inline image previews. The planned cold index/global byte cap
+was replaced by dropping and refetching rows. Long content is display-limited,
+and history loading pauses at the hard cap. Some protocol item types and
+Markdown metadata/footnotes are omitted; recaps and non-error notices are not
+exported. Approvals appear above the composer rather than inside the transcript.
+
+#### 12.2.5 Approvals, questions and the info pane
+
+The active tab shows its oldest pending request, with later requests queued.
+Supported cards include commands, file changes with diffs, permission requests,
+agent questions, MCP forms/links and cross-tab consent. Background tabs signal
+waiting through status and notifications. Focus rules and a short input guard
+prevent typing intended for the composer from approving a new card.
+
+Request ownership follows sub-agent ancestry. Closing a tab cancels its own
+requests and reroutes requests belonging to other threads; restart epochs
+prevent replies reaching a new server with reused request IDs. Unsupported
+verification/form modes are declined, and external ChatGPT token refresh and
+attestation requests are rejected. Server-supplied links are limited to HTTP(S).
+
+The info pane brings together thread settings, context/token use, plans, turn
+changes, queued input, sub-agents, background terminals, goals, hooks, MCP
+status, cross-tab messages and usage limits. Queued input can be reordered,
+sent or removed; goals can be set, edited, paused/resumed or cleared.
+
+Limits: no command editing, goal token-budget controls or usage-reset action.
+Lists and previews are bounded rather than exhaustively paginated. Approval
+diffs are truncated; form inputs are single-line and unmasked. Unreadable
+sub-agent ancestry falls back to an available tab. Section-collapse state is
+shared across tabs and not persisted.
+
+#### 12.2.6 Cross-tab agent messaging
+
+GUI-started threads may receive three `codex_gui` tools: list open threads,
+send to another thread with an optional reply wait, and read received mailbox
+entries. Tools treat peer titles and message content as untrusted data and
+instruct agents to coordinate only when the user requests it.
+
+Delivery requires a receiving-tab card, unless the user has allowed that
+ordered sender/target pair for the session. A more permissive target or a
+message chain beyond three hops always asks again. Escalation compares sandbox,
+writable roots, network access and approval policy; unknown permissions count
+as escalation, but the check does not cover every setting, including the
+approval reviewer.
+
+Messages are limited to 8 KiB, five sends per turn and ten pending messages per
+target. Wait-cycle checks reject deadlocks. Accepted messages enter the durable
+thread queue and carry escaped provenance. A wait returns the target turn's
+reply, or a failure/timeout; a restart drops pending waits but preserves queued
+messages. Old queue entries age out of the GUI's pending count because it cannot
+observe every user removal.
+
+User forwarding works on whole-message text, allows edits and a note, and can
+send now or queue without another consent card. Send now follows the target's
+busy-input preference. Attachments and arbitrary selections are not forwarded.
+
+Receiving can be disabled per tab. New threads follow the saved default;
+threads reopened from history start with receiving off, and side chats always
+have it off. Existing external threads can receive but cannot acquire these
+tools merely by toggling the switch. Turning receiving off also disables that
+tab's tool calls and revokes allowances into it.
+
+The mailbox is `$CODEX_HOME/gui/mailbox.jsonl`, with bounded history, private
+Unix permissions and serialized writes. The info pane shows recent previews,
+not a complete archive. Session allowances are in memory; per-tab receiving
+state and reply waits are not restored after app exit. Mailbox reads return
+incoming messages, while sent-message replies use the wait path. No upstream
+message-board integration was added.
+
+#### 12.2.7 Settings
+
+Settings provides Common, All settings, raw `config.toml`, Account, Providers,
+MCP servers, Skills, Plugins, Hooks, Features, Memories, Import, Appearance,
+Keyboard, Connection, Windows sandbox, Diagnostics and Send feedback pages.
+
+Configuration controls show source layers and policy locks, serialize versioned
+writes, refresh after other operations alter config, and distinguish saved
+changes from changes needing a restart. Diagnostics selects the project folder
+whose layers other settings pages use. Raw local saves preserve file behavior
+and detect external edits; remote saves use server filesystem RPCs. The raw
+editor validates syntax, not the full configuration schema.
+
+Account supports ChatGPT browser/device login, API keys, sign-out and account
+usage. MCP supports adding, toggling, removing and OAuth login; skills can be
+toggled, plugins installed/uninstalled/enabled, hooks enabled/trusted, and
+memories enabled or reset. Import detects selected configuration and sessions
+from Claude Code and Cursor. Features respects managed requirements.
+
+Appearance controls theme, size, renderer, notifications and input behavior.
+Keyboard edits the supported global actions. Connection can test a daemon or
+remote endpoint and save the next-start target. Windows sandbox supports
+readiness and setup. Diagnostics exposes origins, requirements, warnings and
+logs; feedback can include server-collected logs.
+
+Limits: no profiles page, MCP edit form, skill/hook authoring, marketplace
+addition or memory-content viewer. Composer/file-viewer keys are mostly fixed.
+Remote provider changes require restarting the server separately; remote
+feedback lacks the GUI process's logs. Large catalog lists and import history
+are bounded. A saved connection does not replace the current target through
+the ordinary Settings restart action.
+
+#### 12.2.8 Model providers, file viewer and diff viewer
+
+Providers covers OpenAI, Bedrock Mantle/Runtime and local models. Bedrock offers
+profile/environment discovery, API-key/access-key entry, regions, local profile
+validation, application and return to OpenAI. Managed configuration can lock
+provider changes. Switching explicitly selects the destination provider so a
+lower configuration layer cannot silently retain the old one.
+
+Bedrock limits: static models, a region list constrained by the existing setup
+RPCs, profile-only local validation and advisory post-save GovCloud checks.
+Other credentials are exercised by the first model request. Finder launches
+import PATH, not arbitrary AWS environment variables. Ollama and LM Studio
+models can be selected locally; only Ollama downloads are implemented. Remote
+and daemon connections do not offer local model detection/downloads.
+
+File tabs support plain-text selection, path actions, line numbers, find,
+go to line, wrap, chunked loading and live reload. Missing files retain the
+last loaded contents; binary files offer external opening or forced text.
+Programs require confirmation before external launch. Text tabs reuse the
+viewer for messages/threads and offer Copy all and Save as.
+
+Files load in chunks up to 64 MiB. Find searches only loaded text; decoding is
+lossy UTF-8. Wrap removes the gutter and all-match highlights. Remote reads
+transfer the whole file because the protocol lacks ranges, and remote paths
+cannot be revealed locally. Without a working watch, changes are checked when
+the tab is shown. Images have no preview.
+
+Diff tabs handle multi-file unified/Git diffs, renames, copies, binary markers,
+per-file collapse, counts, line numbers and bounded word-level highlighting.
+They can open surviving files and copy the raw diff. There is no side-by-side
+view, find bar or selectable diff rows. Approval diffs stay on the card;
+transcript patch cards open individual file diffs.
+
+### 12.3 Platforms, builds and releases
+
+| Target | Recorded verification | Distribution |
 |---|---|---|
-| Cold start to first frame | < 300 ms | 74 ms from a terminal; 192 ms from Finder or the Dock (includes about 46 ms reading the login shell's `PATH`) |
-| Cold start to usable (server ready) | < 1 s | 190 ms from a terminal; 322 ms from Finder or the Dock |
-| Memory, 1 idle tab | < 80 MiB | 125 MiB footprint with the software renderer; 346 MiB footprint (207 MiB RSS) with OpenGL, mostly GPU driver allocations |
-| Memory per extra tab | < 5 MiB | about 2 MiB (RSS 207 MiB with 1 tab, 224 MiB with 10) |
-| Binary size | < 60 MiB | 220 MiB stripped (codex-core with V8; the shipped `codex` CLI is 241 MiB) |
+| Windows x64 MSVC | Cross-built on macOS with `cargo-xwin`; software/OpenGL smoke runs, PE inspection and interactive use. 595/604 unit tests passed; nine Unix-path assumptions remain to fix. | Published Windows zip. |
+| macOS Apple Silicon | 614 unit tests, clippy, scripted end-to-end tours and performance measurements. | Bundle tooling exists; release zip not attached. |
+| macOS Intel | Cross target / CI matrix configured; not built in this verification. | None. |
+| Windows arm64 | CI matrix configured; not built in this verification. | None. |
+| Linux x64 | Musl cross-check compiles and passes clippy; GNU release target configured; not runtime-tested. | None. |
 
-Renderer choice was measured, not assumed (8.7 s session with a streaming
-reply, then 10 s idle):
+License and dependency-ban checks passed. GUI clippy checks were clean on
+macOS, Windows and Linux; an existing app-server warning remained. Mock-model
+end-to-end runs covered streaming/Markdown, command and patch workflows,
+approvals, plans, settings, file search, cross-tab consent/delivery, recap,
+themes, narrow layouts and quit behavior. They do not substitute for all
+platform-specific runtime checks.
 
-| Renderer | CPU, session | CPU, idle 10 s | Peak footprint |
+**Packaging.** The Windows zip contains `codex-gui.exe`,
+`codex-code-mode-host.exe`, `codex-windows-sandbox-setup.exe` and
+`codex-command-runner.exe`. These are the same runtime boundaries as the CLI:
+V8 stays in its host, elevated setup stays small, and sandboxed commands use
+their dedicated runner. Helpers must remain next to the GUI. macOS/Linux need
+the code-mode helper; `bundle-app.sh` puts it inside `Codex.app`.
+
+**Build requirements.** Code-mode helper builds need Codex's own
+`rusty-v8-v<version>` release artifacts for the `ptrcomp_sandbox` variant,
+verified against the repository manifest. Use the existing setup action or
+its `RUSTY_V8_ARCHIVE` / `RUSTY_V8_SRC_BINDING_PATH` overrides. GUI-only builds
+do not need V8. Windows cross-builds additionally use
+`LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC`, the MSVC target and a stamped
+`STABLE_GIT_COMMIT`. Windows test executables can be cross-built and copied to
+a VM without installing Rust there.
+
+**Release process.** Fork releases use `codex-gui-v*` tags, distinct from the
+upstream `rust-v*.*.*` trigger. The GUI workflow builds
+Windows x64/arm64 and Linux x64 artifacts, but does not publish a GitHub
+release, sign binaries or upload PDBs. The first Windows release was attached
+manually. Releases are unsigned by choice for now, with OS unsigned-app prompts;
+there is no installer, DMG or universal macOS bundle. Linux currently requires
+system `bubblewrap`.
+
+### 12.4 Measured performance
+
+macOS measurements are from an Apple Silicon release build. Footprint and RSS
+are different metrics and are labeled separately.
+
+| Metric | Original budget | Measured |
+|---|---|---|
+| First frame | < 300 ms | 74 ms from terminal; 192 ms from Finder/Dock, including about 46 ms for shell PATH recovery. |
+| Server ready | < 1 s | 190 ms from terminal; 322 ms from Finder/Dock. |
+| One idle tab | < 80 MiB RSS | Software: 125 MiB footprint. OpenGL: 207 MiB RSS / 346 MiB footprint. |
+| Additional tabs | < 5 MiB each | About 2 MiB each; ten-tab RSS 224 MiB, over the separate 200 MiB total target. |
+| Stripped binary | < 60 MiB | 220 MiB; reference CLI 241 MiB. V8 is in the separate helper. |
+
+Windows 11 x64 VM measurements used 14 vCPUs and an NVIDIA RTX 5090, in an SSH
+session without model traffic. They are not GPU-less AVD measurements.
+
+| Metric | Software | OpenGL |
+|---|---|---|
+| Window created | 30 ms | 186 ms |
+| First frame | 83 ms | 221 ms |
+| Server ready | 309 ms | 586 ms |
+| Thread started | 546 ms | 864 ms |
+| Clean shutdown | 225 ms | 255 ms |
+
+The Windows GUI executable is 304 MiB; the four-executable zip is 137 MiB.
+Workspace code, including generated UI and core, dominates size rather than V8.
+
+A macOS renderer comparison used an 8.7-second streaming session followed by
+ten seconds idle:
+
+| Renderer | Session CPU time | Idle CPU time | Peak footprint |
 |---|---|---|---|
-| FemtoVG OpenGL (default) | 1.2 s | 0.04 s | 355 MiB |
+| OpenGL | 1.2 s | 0.04 s | 355 MiB |
 | Software | 6.7 s | 0.08 s | 142 MiB |
-| FemtoVG WGPU | 7.4 s | 0.83 s | 509 MiB |
+| WGPU | 7.4 s | 0.83 s | 509 MiB |
 
-The default is OpenGL, falling back to software when OpenGL is unavailable:
-Slint probes for OpenGL on Windows; on Linux the app checks for the GL
-libraries first and, if OpenGL still fails when the window opens, restarts
-itself with `--renderer software` (Slint's renderer cannot change in-process).
-Settings › Appearance offers "Software" for the smallest memory footprint and
-"GPU" (WGPU, which can use Windows' WARP adapter when `SLINT_WGPU_CPU` is set;
-the app sets it for that choice). Run `codex-rs/gui/dev/measure.sh` to
-reproduce.
+These results motivated OpenGL as the default and software as the lower-memory
+option. The software first-frame mark is an event-loop approximation. GPU-less
+Windows/WARP comparisons and automated budget enforcement remain open.
 
-### 12.3 Corrections to this plan found during implementation
+### 12.5 Learnings
 
-- §3.1: the TUI now connects to a shared local daemon by default
-  (`daemon_auto_start` is stable). The GUI embeds its own server, so the TUI
-  and GUI are separate app-server processes on one `CODEX_HOME`; opening the
-  same thread in both hits "already has an active writer". `--remote unix://`
-  makes the GUI use the daemon instead.
-- §4.1 / §4.2: Slint selects femtovg-wgpu, then software, when no renderer is
-  named; GL FemtoVG is reachable only by name. WARP is used only with
-  `SLINT_WGPU_CPU`. Attribution is mandatory (Help › About shows `AboutSlint`).
-- §5.6: `account/bedrock/setup` only configures Mantle; Runtime is configured
-  with `config/batchWrite`. Provider changes require restarting the embedded
-  app-server (the model catalog is fixed at startup); the GUI does this.
-- §5.7: dynamic tools are registered with `defer_loading: false` under the
-  `codex_gui` namespace; `thread/queue/*` requires `experimental_api` and the
-  state DB, both of which the GUI provides.
-- §5.2: "Ctrl/Cmd+Tab" cannot work on macOS (the system app switcher takes
-  ⌘Tab); the default there is ⌃Tab, as in Safari and Chrome.
-- Platform gaps Slint and winit leave to the app (`gui/src/platform.rs`):
-  macOS `terminate:` (⌘Q from Slint's default app menu, Dock › Quit) exits
-  without `CloseRequested`; Finder/Dock launches get launchd's minimal
-  `PATH` (the app reads the login shell's, without `~/.zshrc`, whose
-  completion setup can block on privacy prompts in an app); the Windows GUI
-  subsystem has no console for `--help`.
+#### Slint
 
-### 12.4 Remaining work
+- Renderer choice must be explicit: the toolkit's unnamed default differs
+  from the GUI's measured OpenGL choice. WARP needs CPU adapters enabled.
+- Virtualization depends on list structure and incremental model updates.
+  Full resets rebuild rows and disturb scrolling; estimated row heights also
+  make programmatic restoration approximate.
+- Bound streaming work. Chunk long code/output and update only the tail to
+  avoid quadratic layout cost. Very large text widgets can still block on
+  first layout.
+- Overlays must own keyboard focus and suppress global shortcuts. Explicit
+  focus and geometry avoid conditional-component and first-change surprises.
+  Keep layout thresholds in one place.
+- Use platform-resolved fonts and drawn icons where fallback is unreliable.
+  Wrapped text does not expose enough geometry for the file gutter; tab
+  expansion and shared text layout avoid missing glyphs and line drift.
+- System theme is known after window creation; OS drops need winit events.
+  Unstable integration APIs are why Slint is pinned. Attribution remains a
+  release requirement.
 
-- Run `just bazel-lock-update` (needs Bazel) so Bazel CI picks up Slint's crates.
-- Sign and notarize the macOS `Codex.app` (including the helpers in
-  `Contents/MacOS`); add a Windows icon resource.
-- Windows installer: register an AppUserModelID so toasts show as Codex (they
-  show as Windows PowerShell today).
-- Linux: ship `bwrap` with the GUI (the bundled-bwrap lookup only knows the
-  CLI's package layout; the GUI uses the system `bubblewrap`).
-- Measure on a GPU-less Windows VM (spike S3): software vs WGPU on WARP.
-- Live Bedrock model discovery; LM Studio downloads; multi-window; voice.
+#### App-server and core
+
+- Separate embedded/daemon servers compete for a thread's active writer.
+  A thread without a first message has no rollout, and ephemeral threads have
+  different history/restart semantics.
+- Resume does not reconstruct every live turn or setting. Recover those
+  explicitly, and carry unsupported setting updates on the next turn.
+  Interrupt before unsubscribing; settle every unfinished card when a turn ends.
+- Dropped events require resyncing both history and ancillary state. Legacy
+  item identifiers need reconciliation, and failed paging must not retry forever.
+- Restarts invalidate requests, watches, catalogs, auth flows and pending
+  tool replies. Track a server epoch, re-register connection resources and
+  discard stale responses.
+- Child-agent requests need ancestry routing and a clear owner when tabs close.
+  Dynamic tools persist with GUI-created threads, but receiving is deliberately
+  off when reopening history. Queues need the experimental API and state DB.
+- Provider changes require fresh server state. Mantle and Runtime use different
+  setup paths, and returning to OpenAI must write its provider explicitly.
+- Configuration versions change after trust, plugin and skill operations too.
+  Serialize writes, refresh origins/defaults from the server, and do not blindly
+  retry whole-table replacements after conflicts.
+- WebSocket workspaces require server-side filesystem, search and Git queries.
+  Unix daemons share local files. Cross-OS absolute paths remain a protocol
+  limitation; connection target, not readiness, determines locality.
+- Two behaviors remain significant: writable thread startup can defeat the
+  intent of “Open restricted”, and default non-Bedrock connection retries can
+  continue indefinitely until interrupted or disabled.
+
+#### Architecture and concurrency
+
+UI callbacks can re-enter the controller and be deferred; independent Tokio
+requests can reach the server out of order. Sequence dependent operations,
+identify tabs by stable IDs, and reject stale generations. A remote file-search
+update arriving before its start is a known unresolved example.
+
+Keep I/O, clipboard decoding, external launches and expensive searches off the
+UI thread. Change process environment only before worker threads start.
+
+#### Windows
+
+The GUI subsystem can attach to a parent console for help/errors, but currently
+loses redirected handles. Missing symbol glyphs require explicit font support
+or drawn icons. OpenGL failures after the initial probe need a software relaunch
+path like Linux's.
+
+The executable lacks its own application manifest and icon resource; a runtime
+window icon does not fix Explorer. An installer-registered AppUserModelID is
+also needed for correctly attributed toasts. Manifest work must cover DPI,
+supported OS, long paths and common controls, including Bazel link flags.
+
+PE inspection found a static CRT and load-time imports supplied by Windows 11;
+no VC++ redistributable is required. Graphics libraries load dynamically.
+The header alone is not evidence of support for older Windows versions.
+Canonical paths, file URLs, command-line splitting and tests must respect
+Windows semantics. The headless SSH smoke test worked, including OpenGL, but
+that VM had a passed-through GPU.
+
+#### macOS
+
+Keep Slint on the real main thread and handle system Quit separately from window
+close. Use Control-Tab for tab cycling; Command-Tab belongs to the OS. Finder
+and Dock need bounded login-shell PATH recovery without interactive startup
+scripts. Initialize notification identity on the main thread to avoid the
+library's unsafe first-use lookup on a worker.
+
+#### Linux
+
+Resolve monospace fonts through fontconfig, keep clipboard ownership alive,
+and account for Wayland's missing file-drop events. OpenGL library/show failures
+need software fallback. Distribution currently depends on system bubblewrap.
+
+#### Build, packaging and release
+
+Keep the helper split for V8, elevated setup and sandbox execution. Use verified
+Codex V8 artifacts rather than assuming upstream denoland archives cover the
+required variant. Cross-builds make Windows verification practical, but each
+platform still needs its own clippy and runtime checks.
+
+The GUI workflow trails CLI release conventions: MSVC linker setup, PDB upload
+and signing remain open. Neither path currently remaps source paths or enables
+Control Flow Guard. Fork-specific tags avoid triggering upstream release flows.
+
+#### Testing
+
+Use the mock Responses server plus UI automation for both real protocol flows
+and server requests the mock cannot naturally produce. Separate dependent UI
+steps so deferred callbacks finish before snapshots or assertions.
+
+Isolate runs with scratch credentials/config, fake AWS and local-model services,
+and distinct ports; inspect persisted results as well as screenshots. Test
+remote mode against a local WebSocket server. Review light/dark and narrow
+layouts, and reduce toolkit layout failures to small reproductions.
+
+Cross-built Windows unit binaries run without Rust on the VM. The nine recorded
+failures came from Unix-specific paths, separators and file URLs; fix fixtures
+and rerun rather than calling the Windows suite passing. The expected totals
+are 604 Windows tests and 614 macOS tests because some are platform-gated.
+
+#### Recurring bug classes found in review
+
+- Stale async answers, reordered operations and late responses after timeout:
+  use stable identities, generations, sequencing and cleanup.
+- Retries without progress: stop and offer explicit retry rather than loop.
+- Dialog replacement and accidental approval: queue prompts, treat cancellation
+  as no action, and protect composer input from newly appearing cards.
+- Duplicated parsers, settings or layout rules: share the implementation.
+- Remote operations accidentally touching local files: derive behavior from
+  connection type consistently.
+- Lost preferences or exposed secrets: preserve unknown settings, back up bad
+  data, write atomically, restrict sensitive files and keep secrets out of logs.
+  Pasted screenshot/log permissions still need attention.
+- Cross-tab loops and permission changes: enforce consent, escalation and rate
+  rules at delivery as well as at request time.
+- Documentation overstating features: distinguish planned, implemented,
+  verified and released behavior.
+
+### 12.6 Remaining work
+
+**Release and packaging**
+
+- macOS release builds and signing/notarization are deferred by user request.
+- Run `just bazel-lock-update` and verify the GUI target; mirror Windows link
+  arguments in Bazel.
+- Add a Windows application manifest and executable icon, and an installer
+  registering the notification AppUserModelID.
+- Align GUI CI's MSVC setup with CLI releases and upload PDBs for crash analysis.
+- Add Windows Authenticode when unsigned distribution is no longer desired.
+- Bundle `bwrap` in Linux releases rather than require system bubblewrap.
+
+**Windows fixes found in verification**
+
+- Repair missing symbols and platform-specific shortcut labels.
+- Preserve redirected output when attaching to the parent console.
+- Fix the nine Unix-path-dependent tests and rerun on Windows.
+- Recover from late OpenGL failures by relaunching with software rendering.
+- Make home-relative path labels use native separators consistently.
+
+**Measurements and reliability**
+
+- Record software versus WGPU/WARP on a GPU-less Windows session host.
+- Investigate memory growth or interaction regressions with focused checks;
+  no repeated startup measurements or routine per-build benchmarking.
+- Serialize dependent backend requests, including remote file-search startup.
+- Resolve restricted-folder trust semantics, cross-OS remote path handling and
+  restrictive permissions for pasted screenshots/logs.
+
+**Features and polish not done**
+
+- Live Bedrock model discovery and LM Studio downloads.
+- Multiple windows, moving tabs between them, restored open tabs and window
+  position/state.
+- Voice, vim mode, composer history recall and rewind/fork-from-here.
+- Cross-block transcript selection, Copy turn and inline image previews.
+- MCP edit form, hook/skill authoring, memory-content viewer and profiles page.
+- Custom-widget accessibility, tab keyboard navigation and a Windows/Linux
+  quit shortcut.
+
+The feature inventory above retains other meaningful limits; minor widget
+behavior and implementation recipes belong in the code and developer guide.
+
+## 13. October 6 interaction fixes and operating policy
+
+- Conversation content wraps to the viewport, including long tokens and code;
+  the transcript has no horizontal scrolling. The file viewer remains independent.
+- Thread and tab right-clicks explicitly open their Rename/Archive menus.
+- `/new` creates a thread immediately in the current conversation’s folder;
+  `/new <name>` also applies the supplied name to that new thread.
+- New Tab’s **New conversation** starts without selecting a project folder,
+  using the local user’s home. Remote connections still require a server folder.
+- Common and All settings use model and reasoning choices. Context choices use
+  bundled model capability limits, retain custom configured values, and store
+  numbers as numbers; **Default** removes the override. Offer 1M tokens only if
+  the model’s maximum permits it (current bundled GPT entries cap at 872,000).
+- History search scans all pages without retaining complete histories, validates
+  returned IDs against each batch and keeps title results visible on model failure.
+- Follow §7’s memory/interactivity priorities, deferred release-build policy,
+  post-upload artifact cleanup and current macOS release deferral.
+
+Verification of these changes: 618 GUI unit tests pass; GUI clippy passes with
+warnings denied. A software-rendered mock-provider UI run verified long-token
+wrapping at normal and narrow widths, immediate named `/new`, rename/archive,
+folder “+”, folderless home creation after the existing trust prompt, constant
+window title and history-only search hits. Rejecting gpt-6-luna caused a successful
+retry with gpt-6.1-sol on the same provider. Bedrock geographic prefixes and ARNs
+are covered by model-selection tests; no live Bedrock model call was made.
+Publishing-helper tests verify digest mismatch preserves local artifacts and a
+matching digest permits cleanup. No release build or GitHub upload was performed.

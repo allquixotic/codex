@@ -147,7 +147,7 @@ component TabButton inherits Rectangle {
     border-width: dragged ? 1px : 0px;
     border-color: Theme.accent;
 
-    ContextMenuArea {
+    tab-menu := ContextMenuArea {
         Menu {
             if info.kind == TabKindCode.thread: MenuItem {
                 title: "Rename…";
@@ -228,6 +228,9 @@ component TabButton inherits Rectangle {
                 }
             }
             pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    tab-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                }
                 if event.kind == PointerEventKind.down {
                     root.drag-released = false;
                 }
@@ -844,7 +847,7 @@ component Drawer inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
-    title: AppState.window-title;
+    title: "Codex";
     // Set from Rust (the PNG is embedded by `include_bytes!`, which works
     // the same under Cargo and Bazel).
     in property <image> app-icon;

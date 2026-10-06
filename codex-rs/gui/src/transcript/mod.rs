@@ -30,7 +30,7 @@ mod links;
 mod markdown;
 mod model;
 mod output;
-mod render;
+pub(crate) mod render;
 mod store;
 mod streaming;
 

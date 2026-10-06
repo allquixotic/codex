@@ -113,3 +113,10 @@ The mock's reply depends on the message prefix (`markdown`, `run <cmd>`,
 Slint is used under the Slint Royalty-free Desktop License 2.0, which requires
 the "Made with Slint" attribution: **Help › About Codex** shows the
 `AboutSlint` widget. Codex sources remain Apache-2.0.
+
+Use targeted development checks while implementing. Full release builds wait
+until all requested work and relevant checks are complete; macOS release builds
+and signing are deferred. For completed packages, `packaging/publish-release.sh`
+uploads to an existing GitHub release, verifies SHA-256 asset digests, then cleans
+local Cargo outputs and the published packages. See GUI.md §7 for memory and
+interaction priorities and when to investigate performance.

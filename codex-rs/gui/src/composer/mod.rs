@@ -56,7 +56,6 @@ use self::slash::SlashCommand;
 use self::text::EnterAction;
 use crate::app::AppController;
 use crate::app::TabId;
-use crate::app::TabKind;
 use crate::app::ThreadPhase;
 use crate::app::ThreadTab;
 use crate::prefs::BusyInput;
@@ -571,15 +570,15 @@ impl AppController {
                 }
             }
             SlashCommand::New => {
-                self.open_new_tab_page();
-                if !args.is_empty()
-                    && let Some(page) = self
-                        .active
-                        .filter(|&active| matches!(self.tabs[active].kind, TabKind::NewTab))
-                {
-                    let tab_id = self.tabs[page].id;
-                    self.toast(format!("The new thread will be named “{args}”"));
-                    self.composer_name_pending_thread(tab_id, args, /*claimed*/ false);
+                if let Some(cwd) = self.thread_tab(index).map(|thread| thread.cwd.clone()) {
+                    self.start_thread_in_folder(cwd);
+                    if !args.is_empty()
+                        && let Some(created) = self.active_thread_index()
+                    {
+                        self.composer_name_pending_thread(self.tabs[created].id, args, true);
+                    }
+                } else {
+                    self.start_folderless_thread();
                 }
             }
             SlashCommand::Resume => {

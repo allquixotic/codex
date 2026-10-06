@@ -32,6 +32,7 @@ export global SidebarState {
     in property <[SidebarRow]> rows;
     // First page of a (re)load in flight.
     in property <bool> loading;
+    in property <bool> searching-history;
     in property <bool> loading-more;
     in property <bool> has-more;
     in property <string> error;
@@ -70,7 +71,7 @@ component FolderRowView inherits Rectangle {
 
     height: 30px;
 
-    ContextMenuArea {
+    folder-menu := ContextMenuArea {
         Menu {
             MenuItem {
                 title: "New thread in this folder";
@@ -94,6 +95,11 @@ component FolderRowView inherits Rectangle {
         touch := TouchArea {
             mouse-cursor: pointer;
             clicked => { SidebarState.folder-action(item.folder, "toggle"); }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    folder-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                }
+            }
         }
     }
 
@@ -128,6 +134,12 @@ component FolderRowView inherits Rectangle {
                 font-size: Theme.font-size-small;
                 vertical-alignment: center;
             }
+            FlatButton {
+                text: "+";
+                width: 24px;
+                clicked => { SidebarState.folder-action(item.folder, "new-thread"); }
+                Tooltip { text: @markdown("New conversation in this folder"); }
+            }
         }
     }
 
@@ -141,7 +153,7 @@ component ThreadRowView inherits Rectangle {
 
     height: 28px;
 
-    ContextMenuArea {
+    thread-menu := ContextMenuArea {
         Menu {
             MenuItem {
                 title: "Open";
@@ -174,6 +186,11 @@ component ThreadRowView inherits Rectangle {
         touch := TouchArea {
             mouse-cursor: pointer;
             clicked => { SidebarState.open-thread(item.id, item.folder); }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    thread-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                }
+            }
         }
     }
 
@@ -292,6 +309,17 @@ export component Sidebar inherits Rectangle {
             }
         }
 
+        if SidebarState.searching-history: Text {
+            text: "Searching conversation history…";
+            color: Theme.text-faint;
+            font-size: Theme.font-size-small;
+            wrap: word-wrap;
+        }
+        if SidebarState.error != "" && SidebarState.rows.length > 0: Text {
+            text: SidebarState.error;
+            color: Theme.danger;
+            wrap: word-wrap;
+        }
         Rectangle {
             vertical-stretch: 1;
 

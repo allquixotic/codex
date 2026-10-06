@@ -645,6 +645,7 @@ impl AppController {
     pub(crate) fn newtab_bind(&mut self) {
         let state = self.window.global::<NewTabState>();
         state.set_folders(ModelRc::from(self.newtab.folders.clone()));
+        state.on_folderless(|| crate::ui_thread::with_app(AppController::start_folderless_thread));
         state.on_choose_folder(|| {
             crate::ui_thread::with_app(AppController::newtab_pick_folder);
         });
@@ -699,6 +700,18 @@ impl AppController {
     pub(crate) fn newtab_on_threads_changed(&mut self) {
         if self.newtab_visible() {
             self.newtab_render();
+        }
+    }
+
+    /// Folderless conversations use the user's home as their working directory.
+    pub(crate) fn start_folderless_thread(&mut self) {
+        if !self.server_files_are_local() {
+            self.toast("Choose a folder on the remote server to start a conversation.");
+            return;
+        }
+        match dirs::home_dir() {
+            Some(home) => self.start_thread_checked(home),
+            None => self.toast("Could not locate your home directory."),
         }
     }
 

@@ -328,7 +328,21 @@ def structured_events(body):
     rid = next_id("resp")
     yield created(rid)
     schema = ((body.get("text") or {}).get("format") or {}).get("schema") or {}
-    yield from message_events(json.dumps(schema_sample(schema)))
+    if "matches" in (schema.get("properties") or {}):
+        text = last_user_text(body) or ""
+        query = json.loads(text.split("Query: ", 1)[1].splitlines()[0]).lower()
+        matches = []
+        for line in text.splitlines():
+            try:
+                row = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(row, dict) and "id" in row and query in (row.get("title", "") + " " + row.get("history", "")).lower():
+                if row["id"] not in matches:
+                    matches.append(row["id"])
+        yield from message_events(json.dumps({"matches": matches}))
+    else:
+        yield from message_events(json.dumps(schema_sample(schema)))
     yield completed(rid)
 
 

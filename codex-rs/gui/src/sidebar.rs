@@ -7,6 +7,8 @@
 //! status dot; [`AppController::sidebar_on_tabs_changed`] updates those marks
 //! in place without refetching.
 
+mod search;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -316,6 +318,8 @@ fn status_for_phase(phase: ThreadPhase) -> SidebarThreadStatus {
 pub(crate) struct SidebarController {
     /// Loaded threads in server order (all pages).
     threads: Vec<ThreadSummary>,
+    history_hits: Vec<ThreadSummary>,
+    search_run: Option<search::SearchRun>,
     /// Last unfiltered list of active threads; kept while a search or the
     /// archived view is shown.
     recent: Vec<ThreadSummary>,
@@ -421,6 +425,7 @@ impl AppController {
     }
 
     pub(crate) fn sidebar_on_notification(&mut self, notification: &ServerNotification) {
+        self.sidebar_search_notification(notification);
         match notification {
             ServerNotification::ThreadStarted(started) => {
                 let thread = &started.thread;
@@ -524,6 +529,7 @@ impl AppController {
             self.sidebar.is_unfiltered(),
             self.sidebar.state_db_populated,
         );
+        self.sidebar_start_history_search();
         // Reload up to one full page of what is shown; rows beyond it stay
         // (see `merge_refreshed_head`), so a refresh does not shrink the
         // list under the user.
@@ -632,7 +638,14 @@ impl AppController {
     }
 
     fn sidebar_search_edited(&mut self, text: String) {
+        if text.trim() == self.sidebar.pending_search.trim() {
+            self.sidebar.pending_search = text;
+            return;
+        }
+        self.sidebar.search_run = None;
+        self.sidebar.generation += 1;
         self.sidebar.pending_search = text;
+        self.sidebar_render_state();
         self.sidebar
             .search_timer
             .start(slint::TimerMode::SingleShot, SEARCH_DEBOUNCE, || {
@@ -642,9 +655,6 @@ impl AppController {
 
     fn sidebar_apply_search(&mut self) {
         let term = self.sidebar.pending_search.trim().to_string();
-        if term == self.sidebar.search_term {
-            return;
-        }
         self.sidebar.search_term = term;
         // A different query starts from one page again.
         self.sidebar.threads.clear();
@@ -656,7 +666,9 @@ impl AppController {
     fn sidebar_render(&mut self) {
         let now = unix_now();
         let has_more = self.sidebar.next_cursor.is_some();
-        let specs = build_rows(&self.sidebar.threads, &self.sidebar.collapsed, has_more);
+        let mut threads = self.sidebar.threads.clone();
+        merge_page(&mut threads, self.sidebar.history_hits.clone());
+        let specs = build_rows(&threads, &self.sidebar.collapsed, has_more);
         let marks = self.sidebar_marks();
         let mut row_index = HashMap::new();
         let rows: Vec<SidebarRow> = specs
@@ -678,6 +690,7 @@ impl AppController {
     fn sidebar_render_state(&self) {
         let state = self.window.global::<SidebarState>();
         state.set_loading(self.sidebar.loading);
+        state.set_searching_history(self.sidebar.search_run.is_some());
         state.set_loading_more(self.sidebar.loading_more);
         state.set_has_more(self.sidebar.next_cursor.is_some());
         state.set_archived(self.sidebar.archived);
@@ -713,9 +726,12 @@ impl AppController {
 
     fn sidebar_remove_thread(&mut self, thread_id: &str) {
         self.sidebar.recent.retain(|thread| thread.id != thread_id);
-        let before = self.sidebar.threads.len();
+        let before = self.sidebar.threads.len() + self.sidebar.history_hits.len();
         self.sidebar.threads.retain(|thread| thread.id != thread_id);
-        if self.sidebar.threads.len() != before {
+        self.sidebar
+            .history_hits
+            .retain(|thread| thread.id != thread_id);
+        if self.sidebar.threads.len() + self.sidebar.history_hits.len() != before {
             self.sidebar_render();
             self.newtab_on_threads_changed();
         }
@@ -723,16 +739,19 @@ impl AppController {
 
     fn sidebar_set_title(&mut self, thread_id: &str, name: &str) {
         let title = thread_title(Some(name), "");
-        if let Some(thread) = self
+        for thread in self
             .sidebar
             .threads
             .iter_mut()
-            .find(|thread| thread.id == thread_id)
-            && thread.title != title
+            .chain(self.sidebar.history_hits.iter_mut())
+            .chain(self.sidebar.recent.iter_mut())
         {
-            thread.title = title;
-            self.sidebar_render();
+            if thread.id == thread_id {
+                thread.title.clone_from(&title);
+            }
         }
+        self.sidebar_render();
+        self.newtab_on_threads_changed();
     }
 
     fn sidebar_thread_action(&mut self, thread_id: &str, action: &str) {
@@ -740,6 +759,7 @@ impl AppController {
             .sidebar
             .threads
             .iter()
+            .chain(self.sidebar.history_hits.iter())
             .find(|thread| thread.id == thread_id)
             .cloned()
         else {

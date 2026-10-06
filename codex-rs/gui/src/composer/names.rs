@@ -1,8 +1,8 @@
 //! Names given with `/new <name>` and `/fork <name>` (as in the TUI, the
 //! argument names the new thread).
 //!
-//! The thread does not exist yet when the command runs: `/new` opens the
-//! "New tab" page and the thread starts once the user picks a folder, and
+//! The thread does not exist yet when the command runs: `/new` starts in
+//! the current folder immediately, and
 //! `/fork` waits for `thread/fork`. The name is kept per tab and applied with
 //! `thread/name/set` once the tab's thread is attached.
 
