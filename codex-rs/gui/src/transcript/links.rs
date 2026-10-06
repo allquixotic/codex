@@ -22,6 +22,33 @@ pub(crate) enum LinkTarget {
 
 const WEB_SCHEMES: [&str; 3] = ["https://", "http://", "mailto:"];
 
+impl LinkTarget {
+    pub(crate) fn destination(&self) -> String {
+        match self {
+            Self::Web(url) | Self::Unknown(url) => url.clone(),
+            Self::File { path, line } => {
+                let path = path.to_string_lossy();
+                line.map_or_else(|| path.to_string(), |line| format!("{path}:{line}"))
+            }
+        }
+    }
+
+    /// Paths become percent-encoded file URLs for the explicit browser action.
+    pub(crate) fn browser_url(&self) -> Option<String> {
+        match self {
+            Self::Web(url) => Some(url.clone()),
+            Self::File { path, line } => {
+                let mut url = url::Url::from_file_path(path).ok()?;
+                if let Some(line) = line {
+                    url.set_fragment(Some(&format!("L{line}")));
+                }
+                Some(url.into())
+            }
+            Self::Unknown(_) => None,
+        }
+    }
+}
+
 /// Decides how to open `url`, resolving relative paths against `cwd`.
 pub(crate) fn classify_link(url: &str, cwd: &Path) -> LinkTarget {
     let url = url.trim();
@@ -256,6 +283,28 @@ pub(crate) fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn v4_file_menu_destinations_preserve_line_and_encode_browser_url() {
+        let folder = tempfile::tempdir().expect("folder");
+        let target = super::classify_link("a%20b.txt:7", folder.path());
+        assert_eq!(
+            target.destination(),
+            format!("{}:7", folder.path().join("a b.txt").display())
+        );
+        let browser = target.browser_url().expect("file URL");
+        assert!(browser.contains("a%20b.txt#L7"), "{browser}");
+        assert_eq!(super::classify_link(&browser, folder.path()), target);
+        let web = super::classify_link("https://example.com/a?b=1", folder.path());
+        assert_eq!(
+            web.browser_url().as_deref(),
+            Some("https://example.com/a?b=1")
+        );
+        assert_eq!(web.destination(), "https://example.com/a?b=1");
+        assert_eq!(
+            super::classify_link("ftp://example.com", folder.path()).browser_url(),
+            None
+        );
+    }
     use super::*;
     use pretty_assertions::assert_eq;
 

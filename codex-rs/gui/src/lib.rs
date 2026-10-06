@@ -29,6 +29,7 @@ mod threads;
 mod transcript;
 mod ui;
 mod ui_thread;
+mod window_runtime;
 mod xtab;
 
 use std::path::PathBuf;
@@ -397,13 +398,16 @@ fn startup_actions(folder: Option<PathBuf>, resume: Option<String>) -> Vec<app::
 fn select_backend(renderer: RendererChoice) -> anyhow::Result<()> {
     let selector = slint::BackendSelector::new()
         .backend_name("winit".to_string())
-        .with_winit_custom_application_handler(WindowEvents);
+        .with_winit_custom_application_handler(WindowEvents::default());
     let selector = if std::env::var_os("SLINT_BACKEND").is_some() {
         selector
     } else {
         match renderer {
             RendererChoice::Software => selector.renderer_name("software".to_string()),
             RendererChoice::Gpu => selector.renderer_name("femtovg-wgpu".to_string()),
+            RendererChoice::Auto if platform::remote_desktop_session() => {
+                selector.renderer_name("software".to_string())
+            }
             RendererChoice::Auto => selector.renderer_name("femtovg".to_string()),
         }
     };
@@ -414,21 +418,50 @@ fn select_backend(renderer: RendererChoice) -> anyhow::Result<()> {
 
 /// Window-system events Slint does not expose: focus (desktop notifications
 /// only fire in the background) and OS light/dark changes (`Theme`).
-struct WindowEvents;
+#[derive(Default)]
+struct WindowEvents {
+    pointer: Option<slint::LogicalPosition>,
+}
 
 impl slint::winit_030::CustomApplicationHandler for WindowEvents {
     fn window_event(
         &mut self,
         _event_loop: &slint::winit_030::winit::event_loop::ActiveEventLoop,
         _window_id: slint::winit_030::winit::window::WindowId,
-        _winit_window: Option<&slint::winit_030::winit::window::Window>,
-        _slint_window: Option<&slint::Window>,
+        winit_window: Option<&slint::winit_030::winit::window::Window>,
+        slint_window: Option<&slint::Window>,
         event: &slint::winit_030::winit::event::WindowEvent,
     ) -> slint::winit_030::EventResult {
         use slint::winit_030::winit::event::WindowEvent;
         use slint::winit_030::winit::window::Theme;
 
         match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = slint_window.map_or(1.0, slint::Window::scale_factor);
+                self.pointer = Some(slint::LogicalPosition::new(
+                    position.x as f32 / scale,
+                    position.y as f32 / scale,
+                ));
+            }
+            WindowEvent::CursorLeft { .. } => self.pointer = None,
+            WindowEvent::MouseWheel { delta, .. } => {
+                use slint::winit_030::winit::event::MouseScrollDelta;
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, dy) => *dy,
+                    MouseScrollDelta::PixelDelta(delta) => delta.y as f32,
+                };
+                if let Some(position) = self.pointer {
+                    ui_thread::with_app(move |app| app.transcript_before_scroll(position, dy));
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. }
+                if *state == slint::winit_030::winit::event::ElementState::Pressed
+                    && *button == slint::winit_030::winit::event::MouseButton::Left =>
+            {
+                if let Some(position) = self.pointer {
+                    ui_thread::with_app(move |app| app.transcript_before_scrollbar_press(position));
+                }
+            }
             WindowEvent::Focused(focused) => {
                 let focused = *focused;
                 ui_thread::with_app(move |app| app.on_window_focus_changed(focused));
@@ -438,6 +471,26 @@ impl slint::winit_030::CustomApplicationHandler for WindowEvents {
                 ui_thread::with_app(move |app| app.on_system_theme_changed(dark));
             }
             _ => {}
+        }
+        // Windows/RDP can lose a retained surface without reporting buffer age
+        // changes. Dirty every existing frame; this schedules no periodic frames.
+        if cfg!(windows) {
+            if matches!(event, WindowEvent::RedrawRequested)
+                && let Some(window) = slint_window
+            {
+                window_runtime::invalidate_frame(window);
+            }
+            if matches!(
+                event,
+                WindowEvent::Focused(true)
+                    | WindowEvent::Occluded(false)
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+            ) && let Some(window) = winit_window
+                && !window.is_minimized().unwrap_or(false)
+            {
+                window.request_redraw();
+            }
         }
         slint::winit_030::EventResult::Propagate
     }

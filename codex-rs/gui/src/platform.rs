@@ -11,6 +11,24 @@
 //! - Linux: [`opengl_available`] lets the default renderer skip OpenGL on
 //!   machines without GL libraries.
 
+/// Windows remote desktops can advertise OpenGL while losing the presentation
+/// surface across reconnects. Use CPU rendering for Auto in those sessions.
+pub(crate) fn remote_desktop_session() -> bool {
+    #[cfg(windows)]
+    {
+        // SAFETY: reads one system metric; no pointers or owned resources.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                windows_sys::Win32::UI::WindowsAndMessaging::SM_REMOTESESSION,
+            ) != 0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 /// Asking a login shell for its `PATH` (macOS; tested on every Unix).
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod login_shell {

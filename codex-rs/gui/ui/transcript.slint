@@ -56,7 +56,19 @@ export struct BlockData {
     footer: bool,
 }
 
+export struct TranscriptViewport { x: float, y: float, width: float, height: float }
+
 export global TranscriptState {
+    in property <string> base-directory;
+    // Logical window bounds, published by the active transcript for pre-input handling.
+    in-out property <TranscriptViewport> viewport;
+    in-out property <float> scroll-y;
+    in-out property <float> scroll-height;
+    in-out property <float> view-height;
+    in-out property <bool> link-hover-visible;
+    in-out property <string> link-hover-text;
+    in-out property <length> link-hover-x;
+    in-out property <length> link-hover-y;
     in property <[BlockData]> blocks;
     in property <bool> has-older;
     in property <bool> loading-older;
@@ -89,6 +101,10 @@ export global TranscriptState {
     callback block-action(string, string);
     callback line-clicked(string, int);
     callback link-clicked(string);
+    callback link-action(string, string);
+    callback link-at(float, float) -> string;
+    pure callback link-destination(string) -> string;
+    pure callback link-is-file(string) -> bool;
     callback suggestion(string);
 }
 
@@ -289,12 +305,137 @@ component SelectableText inherits Rectangle {
                 selection-background-color: Theme.selected;
                 selection-foreground-color: Theme.text;
             }
+            scroll-event(event) => {
+                if event.delta-y > 0px { TranscriptState.follow-tail = false; }
+                reject
+            }
         }
     }
 
 }
 
-// Rich (inline markdown) text with link handling and message actions.
+// Shared web/file interaction. Keep the selected menu destination stable even
+// when moving into the native menu dismisses the hover tooltip.
+component LinkInteraction inherits Rectangle {
+    in property <string> target;
+    in property <bool> message: false;
+    in property <string> row-id;
+    out property <bool> has-hover <=> touch.has-hover;
+    property <string> link;
+    property <string> menu-link;
+    property <Point> hover-point;
+    property <bool> hover-point-valid;
+    callback clicked();
+    clicked => {
+        if root.link != "" { TranscriptState.link-clicked(root.link); }
+    }
+
+    function update-link() {
+        root.link = root.target != "" ? root.target : TranscriptState.link-at(
+            (self.absolute-position.x + touch.mouse-x) / 1px,
+            (self.absolute-position.y + touch.mouse-y) / 1px);
+    }
+
+    function hide-tooltip() {
+        hover-timer.running = false;
+        TranscriptState.link-hover-visible = false;
+    }
+    function restart-hover() {
+        root.hide-tooltip();
+        root.hover-point = { x: touch.mouse-x, y: touch.mouse-y };
+        root.hover-point-valid = true;
+        root.update-link();
+        hover-timer.running = root.link != "";
+        if root.link != "" { hover-timer.restart(); }
+    }
+    hover-timer := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if touch.has-hover && root.link != "" {
+                TranscriptState.link-hover-text = TranscriptState.link-destination(root.link);
+                TranscriptState.link-hover-x = root.absolute-position.x + touch.mouse-x + 12px;
+                TranscriptState.link-hover-y = root.absolute-position.y + touch.mouse-y + 20px;
+                TranscriptState.link-hover-visible = true;
+            }
+        }
+    }
+
+    menu := ContextMenuArea {
+        enabled: root.message || root.link != "";
+        Menu {
+            if root.menu-link != "": MenuItem {
+                title: "Copy link";
+                activated => { TranscriptState.link-action(root.menu-link, "copy"); }
+            }
+            if root.menu-link != "": MenuItem {
+                title: "Open in browser";
+                activated => { TranscriptState.link-action(root.menu-link, "browser"); }
+            }
+            if root.menu-link != "" && TranscriptState.link-is-file(root.menu-link): MenuItem {
+                title: "Open file";
+                activated => { TranscriptState.link-clicked(root.menu-link); }
+            }
+            if root.menu-link != "" && root.message: MenuSeparator { }
+            if root.message: MenuItem {
+                title: "Copy Message as Markdown";
+                activated => { TranscriptState.block-action(root.row-id, "copy-message"); }
+            }
+            if root.message: MenuItem {
+                title: "Copy Paragraph";
+                activated => { TranscriptState.block-action(root.row-id, "copy"); }
+            }
+            if root.message: MenuItem {
+                title: "View Message as Text";
+                activated => { TranscriptState.block-action(root.row-id, "view-text"); }
+            }
+            if root.message: MenuSeparator { }
+            if root.message: MenuItem {
+                title: "Quote in Reply";
+                activated => { TranscriptState.block-action(root.row-id, "quote"); }
+            }
+            if root.message: MenuItem {
+                title: "Send to Tab…";
+                activated => { TranscriptState.block-action(root.row-id, "forward"); }
+            }
+        }
+        touch := TouchArea {
+            mouse-cursor: root.link != "" ? pointer : default;
+            changed has-hover => {
+                if self.has-hover { root.restart-hover(); } else {
+                    root.hide-tooltip(); root.link = ""; root.hover-point-valid = false;
+                }
+            }
+            clicked => { root.hide-tooltip(); root.update-link(); root.clicked(); }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.move {
+                    // `moved` only fires while dragging. Pointer events also
+                    // cover normal hover; ignore synthetic unchanged positions.
+                    if !root.hover-point-valid || self.mouse-x != root.hover-point.x || self.mouse-y != root.hover-point.y {
+                        root.restart-hover();
+                    }
+                } else {
+                    root.hide-tooltip();
+                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                        root.update-link();
+                        root.menu-link = root.link;
+                        if root.message || root.menu-link != "" {
+                            menu.show({ x: self.mouse-x, y: self.mouse-y });
+                        }
+                    }
+                }
+            }
+            scroll-event(event) => {
+                root.hide-tooltip();
+                if event.delta-y > 0px { TranscriptState.follow-tail = false; }
+                reject
+            }
+        }
+    }
+}
+
+// Rich text and table cells share glyph hit-testing, link menus and tooltips.
 component RichText inherits Rectangle {
     min-width: 0px;
     in property <styled-text> rich;
@@ -302,57 +443,18 @@ component RichText inherits Rectangle {
     in property <length> text-size: Theme.font-size;
     in property <bool> message: false;
     in property <string> row-id;
-
+    in property <TextHorizontalAlignment> alignment: TextHorizontalAlignment.left;
     min-height: label.preferred-height;
     preferred-height: label.preferred-height;
-
-    ContextMenuArea {
-        enabled: root.message;
-        Menu {
-            MenuItem {
-                title: "Copy Message as Markdown";
-                activated => {
-                    TranscriptState.block-action(root.row-id, "copy-message");
-                }
-            }
-            MenuItem {
-                title: "Copy Paragraph";
-                activated => {
-                    TranscriptState.block-action(root.row-id, "copy");
-                }
-            }
-            MenuItem {
-                title: "View Message as Text";
-                activated => {
-                    TranscriptState.block-action(root.row-id, "view-text");
-                }
-            }
-            MenuSeparator { }
-            MenuItem {
-                title: "Quote in Reply";
-                activated => {
-                    TranscriptState.block-action(root.row-id, "quote");
-                }
-            }
-            MenuItem {
-                title: "Send to Tab…";
-                activated => {
-                    TranscriptState.block-action(root.row-id, "forward");
-                }
-            }
-        }
-
-        label := StyledText {
-            width: root.width;
-            text: root.rich;
-            default-color: root.text-color;
-            default-font-size: root.text-size;
-            link-color: Theme.accent;
-            link-clicked(url) => {
-                TranscriptState.link-clicked(url);
-            }
-        }
+    label := StyledText {
+        width: root.width;
+        text: root.rich;
+        default-color: root.text-color;
+        default-font-size: root.text-size;
+        link-color: Theme.accent;
+        horizontal-alignment: root.alignment;
     }
+    LinkInteraction { message: root.message; row-id: root.row-id; }
 }
 
 // Disclosure chevron.
@@ -544,18 +646,14 @@ component TableRow inherits Rectangle {
                     padding-top: 5px;
                     padding-bottom: 5px;
                     spacing: root.cell-spacing;
-                    for cell[c] in row: StyledText {
+                    for cell[c] in row: RichText {
                         width: root.inner * root.block.widths[c];
-                        text: cell;
-                        default-color: Theme.text;
-                        default-font-size: Theme.font-size;
-                        link-color: Theme.accent;
-                        horizontal-alignment: root.block.aligns[c] == 2 ? TextHorizontalAlignment.right
+                        rich: cell;
+                        message: root.block.message;
+                        row-id: root.block.id;
+                        alignment: root.block.aligns[c] == 2 ? TextHorizontalAlignment.right
                             : root.block.aligns[c] == 1 ? TextHorizontalAlignment.center
                             : TextHorizontalAlignment.left;
-                        link-clicked(url) => {
-                            TranscriptState.link-clicked(url);
-                        }
                     }
                 }
                 if r < root.block.cells.length - 1: Rectangle {
@@ -868,9 +966,8 @@ component PatchFileRow inherits Card {
                     font-size: Look.code-font-size;
                     vertical-alignment: center;
                     overflow: elide;
-                    path-touch := TouchArea {
-                        enabled: root.block.target != "";
-                        mouse-cursor: root.block.target != "" ? pointer : default;
+                    path-touch := LinkInteraction {
+                        target: root.block.target;
                         clicked => {
                             TranscriptState.block-action(root.block.id, "open-file");
                         }
@@ -1614,6 +1711,18 @@ export component TranscriptView inherits Rectangle {
     property <int> scroll-request: TranscriptState.scroll-request;
     property <int> scroll-top-request: TranscriptState.scroll-top-request;
     property <length> status-height: TranscriptState.status-text != "" ? 30px : 0px;
+    property <Point> position: self.absolute-position;
+
+    function publish-viewport() {
+        TranscriptState.viewport = { x: self.absolute-position.x / 1px,
+            y: self.absolute-position.y / 1px, width: self.width / 1px,
+            height: (self.height - root.status-height) / 1px };
+    }
+    init => { self.publish-viewport(); }
+    changed position => { self.publish-viewport(); }
+    changed width => { self.publish-viewport(); }
+    changed height => { self.publish-viewport(); }
+    changed status-height => { self.publish-viewport(); }
 
     function scroll-to-bottom() {
         list.content-y = min(0px, list.visible-height - list.content-height);
@@ -1643,17 +1752,22 @@ export component TranscriptView inherits Rectangle {
         }
 
         changed content-height => {
+            TranscriptState.scroll-height = self.content-height / 1px;
             if TranscriptState.follow-tail {
                 root.scroll-to-bottom();
             }
         }
         changed visible-height => {
+            TranscriptState.view-height = self.visible-height / 1px;
             if TranscriptState.follow-tail {
                 root.scroll-to-bottom();
             }
         }
+        changed content-y => {
+            TranscriptState.scroll-y = self.content-y / 1px;
+        }
         scrolled => {
-            TranscriptState.follow-tail = self.content-y <= self.visible-height - self.content-height + 32px;
+            TranscriptState.follow-tail = self.content-y <= min(0px, self.visible-height - self.content-height) + 1px;
             if -self.content-y < 2 * self.visible-height && TranscriptState.has-older && !TranscriptState.loading-older && !TranscriptState.older-failed {
                 TranscriptState.load-older(false);
             }

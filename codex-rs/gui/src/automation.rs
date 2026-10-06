@@ -76,6 +76,8 @@ pub(crate) enum Step {
     FileCommand(String),
     /// Resize the window to logical `[width, height]`.
     Resize([f32; 2]),
+    /// Exercise native minimize/restore presentation, particularly on Windows.
+    Minimized(bool),
     /// Save a PNG snapshot of the window.
     Snapshot(PathBuf),
     /// Accept (true) or cancel (false) the open dialog.
@@ -266,6 +268,12 @@ impl AppController {
                         .window()
                         .set_size(slint::LogicalSize::new(width, height));
                 }
+                Step::Minimized(minimized) => {
+                    use slint::winit_030::WinitWindowAccessor;
+                    self.window
+                        .window()
+                        .with_winit_window(|window| window.set_minimized(minimized));
+                }
                 Step::Snapshot(path) => self.automation_snapshot(&path),
                 Step::Dialog(accept) => {
                     self.window
@@ -432,12 +440,12 @@ impl AppController {
             return;
         }
         let window = self.window.as_weak();
-        slint::Timer::single_shot(Duration::ZERO, move || {
+        // Native context menus run a nested event loop. Dispatch from the
+        // platform queue, outside Slint's timer activation stack.
+        let _ = window.upgrade_in_event_loop(move |window| {
             let events: Vec<_> = INPUT_QUEUE.with(|queue| queue.borrow_mut().drain(..).collect());
-            if let Some(window) = window.upgrade() {
-                for event in events {
-                    window.window().dispatch_event(event);
-                }
+            for event in events {
+                window.window().dispatch_event(event);
             }
         });
     }

@@ -129,6 +129,49 @@ impl AppController {
             let url = url.to_string();
             crate::ui_thread::with_app(move |app| app.transcript_open_link(&url));
         });
+        let weak = self.window.as_weak();
+        state.on_link_at(move |x, y| {
+            weak.upgrade()
+                .and_then(|window| crate::window_runtime::link_at(window.window(), x, y))
+                .unwrap_or_default()
+                .into()
+        });
+        let weak = self.window.as_weak();
+        state.on_link_destination(move |url| {
+            let cwd = weak
+                .upgrade()
+                .map(|window| {
+                    PathBuf::from(
+                        window
+                            .global::<TranscriptState>()
+                            .get_base_directory()
+                            .as_str(),
+                    )
+                })
+                .unwrap_or_default();
+            let target = links::classify_link(&url, &cwd);
+            target.destination().into()
+        });
+        let weak = self.window.as_weak();
+        state.on_link_is_file(move |url| {
+            let cwd = weak
+                .upgrade()
+                .map(|window| {
+                    PathBuf::from(
+                        window
+                            .global::<TranscriptState>()
+                            .get_base_directory()
+                            .as_str(),
+                    )
+                })
+                .unwrap_or_default();
+            matches!(links::classify_link(&url, &cwd), LinkTarget::File { .. })
+        });
+        state.on_link_action(|url, action| {
+            let url = url.to_string();
+            let action = action.to_string();
+            crate::ui_thread::with_app(move |app| app.transcript_link_action(&url, &action));
+        });
         state.on_load_older(|requested| {
             crate::ui_thread::with_app(move |app| {
                 if let Some(index) = app.active_thread_index() {
@@ -249,6 +292,7 @@ impl AppController {
         state.set_status_text(status_text(thread).into());
         state.set_phase(phase_code(thread.phase));
         state.set_folder(crate::app::folder_label(&thread.cwd).into());
+        state.set_base_directory(thread.cwd.to_string_lossy().as_ref().into());
         state.set_error_text(thread.last_error.clone().unwrap_or_default().into());
     }
 
@@ -741,6 +785,25 @@ impl AppController {
         };
         let (name, argument) = command.split_once(':').unwrap_or((command, ""));
         match name {
+            "log-scroll" => {
+                let state = self.window.global::<TranscriptState>();
+                eprintln!(
+                    "codex-gui scroll: y={} content={} viewport={} follow={}",
+                    state.get_scroll_y(),
+                    state.get_scroll_height(),
+                    state.get_view_height(),
+                    state.get_follow_tail()
+                );
+            }
+            "log-hover" => {
+                let state = self.window.global::<TranscriptState>();
+                eprintln!(
+                    "codex-gui hover: visible={} destination={}",
+                    state.get_link_hover_visible(),
+                    state.get_link_hover_text()
+                );
+            }
+            "copy-link" => self.transcript_link_action(argument, "copy"),
             "expand-all" | "collapse-all" => {
                 let expand = name == "expand-all";
                 let ids: Vec<String> = self
@@ -852,6 +915,7 @@ impl AppController {
                     .filter_map(|value| value.trim().parse().ok())
                     .collect();
                 if let [x, y, delta_x, delta_y] = values[..] {
+                    self.transcript_before_scroll(slint::LogicalPosition::new(x, y), delta_y);
                     self.window.window().dispatch_event(
                         slint::platform::WindowEvent::PointerScrolled {
                             position: slint::LogicalPosition::new(x, y),
@@ -901,6 +965,54 @@ impl AppController {
     }
 
     // ----- view callbacks ---------------------------------------------------
+
+    /// Detach before Slint recalculates virtual row heights for an upward gesture.
+    pub(crate) fn transcript_before_scroll(&self, position: slint::LogicalPosition, dy: f32) {
+        if self.active_thread_index().is_none() {
+            return;
+        }
+        let state = self.window.global::<TranscriptState>();
+        let rect = state.get_viewport();
+        if position.x >= rect.x
+            && position.x < rect.x + rect.width
+            && position.y >= rect.y
+            && position.y < rect.y + rect.height
+        {
+            state.set_link_hover_visible(false);
+            if dy > 0.0 {
+                state.set_follow_tail(false);
+            }
+        }
+    }
+
+    pub(crate) fn transcript_before_scrollbar_press(&self, position: slint::LogicalPosition) {
+        let rect = self.window.global::<TranscriptState>().get_viewport();
+        if position.x >= rect.x + rect.width - 18.0 {
+            self.transcript_before_scroll(position, 1.0);
+        }
+    }
+
+    fn transcript_link_action(&mut self, url: &str, action: &str) {
+        let cwd = self
+            .active_thread_index()
+            .and_then(|index| self.thread_tab(index))
+            .map(|thread| thread.cwd.clone())
+            .unwrap_or_default();
+        let target = links::classify_link(url, &cwd);
+        match action {
+            "copy" => self.copy_to_clipboard(&target.destination()),
+            "browser" => {
+                if let Some(url) = target.browser_url() {
+                    if let Err(err) = webbrowser::open(&url) {
+                        self.toast(format!("Could not open link: {err}"));
+                    }
+                } else {
+                    self.toast(format!("Cannot open {url}"));
+                }
+            }
+            _ => {}
+        }
+    }
 
     fn transcript_toggle(&mut self, row_id: &str) {
         let Some(index) = self.active_thread_index() else {

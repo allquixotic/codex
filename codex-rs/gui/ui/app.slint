@@ -1135,4 +1135,26 @@ export component MainWindow inherits Window {
             vertical-alignment: center;
         }
     }
+
+    // Plain text preserves URL punctuation. One-shot hover timers live on the
+    // link areas; movement, clicks and scrolling dismiss this overlay.
+    if TranscriptState.link-hover-visible && !AppState.dialog-open && !AppState.about-open: Rectangle {
+        x: clamp(TranscriptState.link-hover-x, Theme.pad-s, root.width - self.width - Theme.pad-s);
+        y: clamp(TranscriptState.link-hover-y, Theme.pad-s, root.height - self.height - Theme.pad-s);
+        width: min(root.width - 2 * Theme.pad-s, 560px);
+        height: hover-label.preferred-height + 2 * Theme.pad-s;
+        background: Theme.surface-alt;
+        border-color: Theme.border-strong;
+        border-width: 1px;
+        border-radius: Theme.radius-small;
+        hover-label := Text {
+            x: Theme.pad-s;
+            y: Theme.pad-s;
+            width: parent.width - 2 * Theme.pad-s;
+            text: TranscriptState.link-hover-text;
+            color: Theme.text;
+            font-size: Theme.font-size-small;
+            wrap: word-wrap;
+        }
+    }
 }

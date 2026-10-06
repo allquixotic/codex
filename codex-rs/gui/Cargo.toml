@@ -54,6 +54,8 @@ dirs = { workspace = true }
 dunce = { workspace = true }
 futures = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
+# Version matches Slint: native glyph hit-testing and renderer invalidation.
+i-slint-core = { version = "=1.18.1", features = ["shared-parley"] }
 notify-rust = { workspace = true }
 pulldown-cmark = { workspace = true }
 rfd = { workspace = true }
@@ -107,7 +109,7 @@ objc2 = "0.6.3"
 
 # Attaches to the parent console for `--help` and argument errors.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Console"] }
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
 
 [package.metadata.cargo-shear]
 # Only enabled for its `fontconfig-dlopen` feature (see above).

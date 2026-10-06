@@ -1010,3 +1010,34 @@ GitHub's published digest matched before cleanup. Removed 20.5 GiB of Cargo
 outputs, the verified local copies of both published Windows packages and the
 temporary V8 download. Removed the Windows smoke-test binaries and ZIP as well;
 validation logs and screenshots remain. No macOS release build was made.
+
+## 15. Conversation scrolling, Windows redraw and link interactions
+
+Upward wheel gestures detach tail-following before virtual row measurements
+change the transcript height. Small idle scrolls and scrollbar gestures detach.
+Returning to the bottom or choosing “Jump to latest”
+resumes tail-following. The pane still has no horizontal scrolling.
+
+Windows redraws invalidate the complete frame, so retained presentation buffers
+cannot leave stale or black regions after remote-display exposure. Focus,
+restore, resize and scale changes request a frame. This uses existing redraw
+events and adds no idle polling. Automatic renderer selection uses the software
+renderer in Windows remote desktop sessions; explicit renderer overrides remain
+available. The regression fixture simulates lost retained-buffer pixels; it
+does not reproduce a particular Azure Virtual Desktop driver failure.
+
+Web and file links share right-click “Copy link” and “Open in browser” actions;
+file links also offer “Open file”. Copying a file destination resolves relative
+paths against the conversation folder and preserves the line number. Browser
+actions convert paths to encoded `file:` URLs. Rich paragraphs, wrapped links,
+table cells and patch-file titles share the interaction. After a stationary
+hover, a plain-text tooltip shows the destination; pointer movement, clicks,
+scrolling or leaving the link dismiss it. Glyph hit-testing respects clipping.
+
+Slint's shaped-glyph hit-test and renderer invalidation APIs are isolated in
+`codex-rs/gui/src/window_runtime.rs`. The direct `i-slint-core` dependency must
+stay aligned with Slint 1.18.1 when upgrading. Scoped recurrence invariants and
+regressions are recorded in `codex-rs/gui/SPEC.md`.
+The pinned core source under `third_party/slint` has a one-line correction to
+accumulate hit-test results across every wrapped line. Remove the override when
+an upstream Slint release supplies the correction.
