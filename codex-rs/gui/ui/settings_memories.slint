@@ -1,0 +1,74 @@
+// Settings › Memories: the memories feature, whether Codex uses and creates
+// memories, and resetting all memories (the TUI's /memories).
+//
+// OWNER: settings feature.
+
+import { ListView } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton } from "theme.slint";
+import { SettingsState } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, FieldRowView } from "settings_widgets.slint";
+import { ServerDownBanner } from "settings_config.slint";
+
+export component MemoriesPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+
+    VerticalLayout {
+        PageHeader {
+            title: "Memories";
+            subtitle: "Codex can remember useful context from your threads, such as preferences and project facts, and use it in new threads. Settings are saved to your config.toml; resetting deletes the memories Codex has created and keeps your threads.";
+            side-padding: root.side;
+            VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Learn more";
+                    clicked => {
+                        SettingsState.memories-learn-more();
+                    }
+                }
+            }
+            FlatButton {
+                text: SettingsState.memories-resetting ? "Resetting…" : "Reset all memories…";
+                danger: true;
+                enabled: SettingsState.server-ready && !SettingsState.memories-resetting;
+                clicked => {
+                    SettingsState.memories-reset();
+                }
+            }
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+        VerticalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            spacing: Theme.pad-m;
+            padding-bottom: Theme.pad-m;
+            if SettingsState.memories-notice != "": Banner {
+                tone: SettingsState.memories-notice-tone == 1 ? 1 : 3;
+                text: SettingsState.memories-notice;
+            }
+            if !SettingsState.memories-feature-on: Banner {
+                tone: 2;
+                text: "Memories are off, so Codex neither uses nor creates them. Turn on Memories below to use the other settings.";
+            }
+            if SettingsState.memories-status != "": Text {
+                text: SettingsState.memories-status;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for field in SettingsState.memory-fields: FieldRowView {
+                field: field;
+                side-padding: root.side;
+                toggled(value) => {
+                    SettingsState.field-toggle("memories", field.key, value);
+                }
+                reset => {
+                    SettingsState.field-reset("memories", field.key);
+                }
+            }
+        }
+    }
+}

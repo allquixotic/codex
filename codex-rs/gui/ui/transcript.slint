@@ -1,0 +1,1780 @@
+// Transcript: virtualized list of blocks for the active thread tab.
+//
+// OWNER: transcript feature (src/transcript/). Every row is one `BlockData`
+// produced by `src/transcript/blocks.rs`; the numeric codes below mirror the
+// Rust enums there (BlockKind, Status, Tone, Gap, line kinds).
+
+import { ListView, Spinner } from "std-widgets.slint";
+import { Theme, LinkButton, FlatButton } from "theme.slint";
+
+// A sub-line of a block: diff line, plan step, agent, chip, or tool result.
+export struct BlockLine {
+    text: string,
+    kind: int,
+    gutter: string,
+    target: string,
+}
+
+// One visible row.
+//   kind:   0 paragraph, 1 heading, 2 code, 3 table, 4 quote, 5 rule,
+//           6 user, 7 reasoning, 8 exec, 9 explore, 10 patch summary,
+//           11 patch file, 12 tool, 13 agent, 14 notice, 15 separator,
+//           16 plan update, 17 section, 18 card header
+//   status: 0 none, 1 running, 2 ok, 3 failed, 4 declined, 5 interrupted
+//   tone:   0 normal, 1 muted, 2 plan, 3 info, 4 warning, 5 error, 6 success
+//   gap:    0 attached, 1 block, 2 entry, 3 list item
+//   frame:  0 none, 1 card top, 2 card middle, 3 card bottom, 4 single-row card
+//   part:   code rows of one block: 0 whole block, 1 first, 2 middle, 3 last
+export struct BlockData {
+    id: string,
+    kind: int,
+    part: int,
+    title: string,
+    text: string,
+    rich: styled-text,
+    use-rich: bool,
+    status: int,
+    expanded: bool,
+    expandable: bool,
+    tone: int,
+    gap: int,
+    frame: int,
+    level: int,
+    quote: int,
+    meta: string,
+    detail: string,
+    target: string,
+    added: int,
+    removed: int,
+    lines: [BlockLine],
+    cells: [[styled-text]],
+    widths: [float],
+    aligns: [int],
+    copyable: bool,
+    message: bool,
+    // Last row of a completed message: show Copy / Quote / Send to tab.
+    footer: bool,
+}
+
+export global TranscriptState {
+    in property <[BlockData]> blocks;
+    in property <bool> has-older;
+    in property <bool> loading-older;
+    // Loading older history failed: scrolling no longer loads; the pill
+    // offers a retry.
+    in property <bool> older-failed;
+    // Initial history is loading.
+    in property <bool> loading;
+    // 0 no thread, 1 starting, 2 idle, 3 running, 4 waiting, 5 error, 6 closed.
+    in property <int> phase;
+    in property <string> folder;
+    in property <string> error-text;
+    // Shown under the transcript while a turn runs.
+    in property <string> status-text;
+    in property <string> empty-hint: "Ask a question, describe a change, or paste an error.";
+    // Stick to the bottom while new content arrives.
+    in-out property <bool> follow-tail: true;
+    // Incremented by Rust to scroll to the bottom / the top.
+    in property <int> scroll-request;
+    in property <int> scroll-top-request;
+    // `requested`: the user asked (the pill), rather than scrolling near
+    // the top.
+    callback load-older(/* requested */ bool);
+    callback copy-block(string);
+    callback toggle-block(string);
+    // Row actions: "copy", "copy-message", "quote", "forward", "toggle",
+    // "open-file", "open-agent", "open-diff", "view-text" (the message, or
+    // the row, in a selectable text tab), "open-source" (the tab a
+    // cross-tab message came from).
+    callback block-action(string, string);
+    callback line-clicked(string, int);
+    callback link-clicked(string);
+    callback suggestion(string);
+}
+
+global Look {
+    out property <length> max-content-width: 860px;
+    out property <length> code-font-size: Theme.font-size - 1px;
+    out property <length> line-height: Theme.font-size + 7px;
+
+    public pure function status-color(status: int) -> color {
+        if status == 1 {
+            return Theme.accent;
+        }
+        if status == 2 {
+            return Theme.success;
+        }
+        if status == 3 {
+            return Theme.danger;
+        }
+        if status == 5 {
+            return Theme.warning;
+        }
+        return Theme.text-faint;
+    }
+
+    public pure function status-glyph(status: int) -> string {
+        if status == 2 {
+            return "✓";
+        }
+        if status == 3 {
+            return "✕";
+        }
+        if status == 4 {
+            return "⊘";
+        }
+        if status == 5 {
+            return "■";
+        }
+        return "•";
+    }
+
+    public pure function tone-color(tone: int) -> color {
+        if tone == 1 {
+            return Theme.text-muted;
+        }
+        if tone == 4 {
+            return Theme.warning;
+        }
+        if tone == 5 {
+            return Theme.danger;
+        }
+        if tone == 6 {
+            return Theme.success;
+        }
+        return Theme.text;
+    }
+}
+
+// Status indicator: a small spinner while running, a drawn icon otherwise
+// (paths, so no font needs the glyphs).
+component StatusGlyph inherits Rectangle {
+    in property <int> status;
+    property <color> tint: Look.status-color(root.status);
+    width: 16px;
+    height: 16px;
+
+    if root.status == 1: Spinner {
+        x: 1px;
+        y: 1px;
+        width: 14px;
+        height: 14px;
+        indeterminate: true;
+    }
+    if root.status == 2: Path {
+        width: 16px;
+        height: 16px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M 3.5 8.5 L 6.5 11.5 L 12.5 4.5";
+        stroke: root.tint;
+        stroke-width: 1.8px;
+    }
+    if root.status == 3: Path {
+        width: 16px;
+        height: 16px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M 4.5 4.5 L 11.5 11.5 M 11.5 4.5 L 4.5 11.5";
+        stroke: root.tint;
+        stroke-width: 1.8px;
+    }
+    if root.status == 4: Rectangle {
+        x: 3px;
+        y: 3px;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        border-width: 1.5px;
+        border-color: root.tint;
+        Path {
+            width: 10px;
+            height: 10px;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            commands: "M 2.5 7.5 L 7.5 2.5";
+            stroke: root.tint;
+            stroke-width: 1.5px;
+        }
+    }
+    if root.status == 5: Rectangle {
+        x: 4px;
+        y: 4px;
+        width: 8px;
+        height: 8px;
+        border-radius: 1px;
+        background: root.tint;
+    }
+    if root.status == 0: Rectangle {
+        x: 6px;
+        y: 6px;
+        width: 4px;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.text-faint;
+    }
+}
+
+// Read-only selectable text with a Copy / Select All context menu and,
+// for message rows, the message actions. Unwrapped text that is wider than
+// the row scrolls sideways (horizontal wheel or Shift+wheel, the bar below
+// it, or moving the cursor); vertical wheel events stay with the transcript.
+component SelectableText inherits Rectangle {
+    in property <string> text;
+    in property <bool> mono: false;
+    in property <bool> wrap: true;
+    in property <color> text-color: Theme.text;
+    in property <length> text-size: Theme.font-size;
+    in property <bool> message: false;
+    in property <string> row-id;
+
+    property <length> overflow: root.wrap ? 0px : max(0px, input.preferred-width - root.width);
+    property <length> offset: 0px;
+    property <length> bar-space: root.overflow > 0px ? 10px : 0px;
+    property <length> thumb-width: root.overflow > 0px ? max(32px, root.width * root.width / input.preferred-width) : 0px;
+
+    min-height: input.preferred-height + root.bar-space;
+    preferred-height: input.preferred-height + root.bar-space;
+    clip: !root.wrap;
+
+    function scroll-to(offset: length) {
+        root.offset = clamp(offset, 0px, root.overflow);
+    }
+
+    // Rows are reused for other blocks while scrolling.
+    changed text => {
+        root.offset = 0px;
+    }
+    changed overflow => {
+        root.offset = min(root.offset, root.overflow);
+    }
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Copy";
+                enabled: input.anchor-position-byte-offset != input.cursor-position-byte-offset;
+                activated => {
+                    input.copy();
+                }
+            }
+            MenuItem {
+                title: "Select All";
+                activated => {
+                    input.focus();
+                    input.select-all();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: root.message ? "Copy Message" : "Copy All";
+                activated => {
+                    TranscriptState.block-action(root.row-id, root.message ? "copy-message" : "copy");
+                }
+            }
+            MenuItem {
+                title: root.message ? "View Message as Text" : "View as Text";
+                activated => {
+                    TranscriptState.block-action(root.row-id, "view-text");
+                }
+            }
+            if root.message: MenuItem {
+                title: "Quote in Reply";
+                activated => {
+                    TranscriptState.block-action(root.row-id, "quote");
+                }
+            }
+            if root.message: MenuItem {
+                title: "Send to Tab…";
+                activated => {
+                    TranscriptState.block-action(root.row-id, "forward");
+                }
+            }
+        }
+
+        TouchArea {
+            scroll-event(event) => {
+                if root.overflow <= 0px {
+                    return reject;
+                }
+                let dx = event.modifiers.shift && event.delta-x == 0px ? event.delta-y : event.delta-x;
+                if dx == 0px || (abs(dx) < abs(event.delta-y) && !event.modifiers.shift) {
+                    return reject;
+                }
+                root.scroll-to(root.offset - dx);
+                accept
+            }
+
+            input := TextInput {
+                x: -root.offset;
+                y: 0;
+                width: root.wrap ? root.width : max(root.width, self.preferred-width);
+                height: self.preferred-height;
+                text: root.text;
+                read-only: true;
+                single-line: false;
+                wrap: root.wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
+                font-family: root.mono ? Theme.mono-font : Theme.ui-font;
+                font-size: root.text-size;
+                color: root.text-color;
+                selection-background-color: Theme.selected;
+                selection-foreground-color: Theme.text;
+                // Keep the cursor in view while selecting with the mouse or keys.
+                cursor-position-changed(cpos) => {
+                    if root.overflow > 0px && self.has-focus {
+                        if cpos.x < root.offset + 8px {
+                            root.scroll-to(cpos.x - 24px);
+                        } else if cpos.x > root.offset + root.width - 8px {
+                            root.scroll-to(cpos.x - root.width + 24px);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.overflow > 0px: Rectangle {
+        y: input.preferred-height + 3px;
+        height: 6px;
+        border-radius: 3px;
+        background: bar-touch.has-hover || bar-touch.pressed ? Theme.hover : transparent;
+
+        Rectangle {
+            x: (parent.width - self.width) * root.offset / root.overflow;
+            width: root.thumb-width;
+            border-radius: 3px;
+            background: bar-touch.pressed ? Theme.text-faint : Theme.border-strong;
+        }
+
+        bar-touch := TouchArea {
+            property <length> start-offset;
+            mouse-cursor: default;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    self.start-offset = root.offset;
+                }
+            }
+            moved => {
+                if self.pressed && parent.width > root.thumb-width {
+                    root.scroll-to(self.start-offset + (self.mouse-x - self.pressed-x) * root.overflow / (parent.width - root.thumb-width));
+                }
+            }
+        }
+    }
+}
+
+// Rich (inline markdown) text with link handling and message actions.
+component RichText inherits Rectangle {
+    in property <styled-text> rich;
+    in property <color> text-color: Theme.text;
+    in property <length> text-size: Theme.font-size;
+    in property <bool> message: false;
+    in property <string> row-id;
+
+    min-height: label.preferred-height;
+    preferred-height: label.preferred-height;
+
+    ContextMenuArea {
+        enabled: root.message;
+        Menu {
+            MenuItem {
+                title: "Copy Message as Markdown";
+                activated => {
+                    TranscriptState.block-action(root.row-id, "copy-message");
+                }
+            }
+            MenuItem {
+                title: "Copy Paragraph";
+                activated => {
+                    TranscriptState.block-action(root.row-id, "copy");
+                }
+            }
+            MenuItem {
+                title: "View Message as Text";
+                activated => {
+                    TranscriptState.block-action(root.row-id, "view-text");
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Quote in Reply";
+                activated => {
+                    TranscriptState.block-action(root.row-id, "quote");
+                }
+            }
+            MenuItem {
+                title: "Send to Tab…";
+                activated => {
+                    TranscriptState.block-action(root.row-id, "forward");
+                }
+            }
+        }
+
+        label := StyledText {
+            width: root.width;
+            text: root.rich;
+            default-color: root.text-color;
+            default-font-size: root.text-size;
+            link-color: Theme.accent;
+            link-clicked(url) => {
+                TranscriptState.link-clicked(url);
+            }
+        }
+    }
+}
+
+// Disclosure chevron.
+component Chevron inherits Rectangle {
+    in property <bool> open;
+    in property <color> tint: Theme.text-faint;
+    width: 12px;
+    Path {
+        x: 0;
+        y: (parent.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: root.open ? "M 3 4.5 L 6 7.5 L 9 4.5" : "M 4.5 3 L 7.5 6 L 4.5 9";
+        stroke: root.tint;
+        stroke-width: 1.5px;
+    }
+}
+
+// Bordered card used by tool-like rows.
+component Card inherits Rectangle {
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: Theme.radius;
+}
+
+// "+12 −3" counters.
+component Counts inherits HorizontalLayout {
+    in property <int> added;
+    in property <int> removed;
+    spacing: 4px;
+    if root.added > 0: Text {
+        text: "+" + root.added;
+        color: Theme.diff-add-fg;
+        font-size: Theme.font-size-small;
+        font-family: Theme.mono-font;
+        vertical-alignment: center;
+    }
+    if root.removed > 0: Text {
+        text: "−" + root.removed;
+        color: Theme.diff-del-fg;
+        font-size: Theme.font-size-small;
+        font-family: Theme.mono-font;
+        vertical-alignment: center;
+    }
+}
+
+// Monospace box below a card header (command output, tool results).
+component OutputBox inherits Rectangle {
+    in property <string> text;
+    in property <string> row-id;
+    in property <bool> show-copy;
+    background: Theme.surface-sunken;
+    border-radius: Theme.radius-small;
+
+    VerticalLayout {
+        padding: Theme.pad-m;
+        padding-left: Theme.pad-l;
+        spacing: Theme.pad-s;
+        SelectableText {
+            text: root.text;
+            mono: true;
+            wrap: false;
+            text-color: Theme.text-muted;
+            text-size: Look.code-font-size;
+            row-id: root.row-id;
+        }
+    }
+
+    if root.show-copy: LinkButton {
+        x: parent.width - self.width - Theme.pad-s;
+        y: Theme.pad-s;
+        width: 44px;
+        height: 20px;
+        text: "Copy";
+        text-color: Theme.text-muted;
+        clicked => {
+            TranscriptState.copy-block(root.row-id);
+        }
+    }
+}
+
+component ParagraphRow inherits VerticalLayout {
+    in property <BlockData> block;
+    RichText {
+        rich: root.block.rich;
+        text-color: Look.tone-color(root.block.tone);
+        message: root.block.message;
+        row-id: root.block.id;
+    }
+}
+
+component HeadingRow inherits VerticalLayout {
+    in property <BlockData> block;
+    padding-top: root.block.level <= 2 ? 6px : 2px;
+    RichText {
+        rich: root.block.rich;
+        text-size: root.block.level == 1 ? Theme.font-size + 7px
+            : root.block.level == 2 ? Theme.font-size + 4px
+            : root.block.level == 3 ? Theme.font-size + 2px
+            : Theme.font-size;
+        message: root.block.message;
+        row-id: root.block.id;
+    }
+}
+
+component CodeRow inherits Rectangle {
+    in property <BlockData> block;
+    // A long block is split into rows that draw one box together: the
+    // first row has the header and the top edge, the last row the bottom
+    // edge (`Part` in blocks.rs).
+    property <bool> has-top: root.block.part == 0 || root.block.part == 1;
+    property <bool> has-bottom: root.block.part == 0 || root.block.part == 3;
+    min-height: code-layout.min-height;
+    preferred-height: code-layout.preferred-height;
+    // The box of a middle row extends past the row; clipping cuts its top
+    // and bottom edges off.
+    clip: !(root.has-top && root.has-bottom);
+
+    Rectangle {
+        y: root.has-top ? 0 : -16px;
+        height: (root.has-bottom ? root.height : root.height + 16px) - self.y;
+        background: Theme.surface-sunken;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius;
+    }
+
+    code-layout := VerticalLayout {
+        if root.has-top: HorizontalLayout {
+            padding-left: Theme.pad-l;
+            padding-right: Theme.pad-s;
+            padding-top: Theme.pad-xs;
+            height: 26px;
+            Text {
+                text: root.block.meta != "" ? root.block.meta : "code";
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            LinkButton {
+                text: "Copy";
+                text-color: Theme.text-muted;
+                clicked => {
+                    TranscriptState.copy-block(root.block.id);
+                }
+            }
+        }
+        VerticalLayout {
+            padding-left: Theme.pad-l;
+            padding-right: Theme.pad-l;
+            padding-bottom: root.has-bottom ? Theme.pad-m : 0px;
+            SelectableText {
+                text: root.block.text;
+                mono: true;
+                wrap: false;
+                text-size: Look.code-font-size;
+                message: root.block.message;
+                row-id: root.block.id;
+            }
+        }
+    }
+}
+
+component TableRow inherits Rectangle {
+    in property <BlockData> block;
+    // Width available to the table, computed by the row (not from the
+    // layout, which would make cell widths depend on themselves).
+    in property <length> available;
+    property <length> cell-pad: Theme.pad-m;
+    property <length> cell-spacing: Theme.pad-l;
+    property <length> inner: root.available - 2 * self.cell-pad - (root.block.widths.length - 1) * self.cell-spacing;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: Theme.radius;
+    min-height: table-layout.preferred-height;
+
+    table-layout := VerticalLayout {
+        for row[r] in root.block.cells: Rectangle {
+            background: r == 0 ? Theme.surface-alt : transparent;
+            border-radius: r == 0 ? Theme.radius : 0;
+            VerticalLayout {
+                HorizontalLayout {
+                    padding-left: root.cell-pad;
+                    padding-right: root.cell-pad;
+                    padding-top: 5px;
+                    padding-bottom: 5px;
+                    spacing: root.cell-spacing;
+                    for cell[c] in row: StyledText {
+                        width: root.inner * root.block.widths[c];
+                        text: cell;
+                        default-color: Theme.text;
+                        default-font-size: Theme.font-size;
+                        link-color: Theme.accent;
+                        horizontal-alignment: root.block.aligns[c] == 2 ? TextHorizontalAlignment.right
+                            : root.block.aligns[c] == 1 ? TextHorizontalAlignment.center
+                            : TextHorizontalAlignment.left;
+                        link-clicked(url) => {
+                            TranscriptState.link-clicked(url);
+                        }
+                    }
+                }
+                if r < root.block.cells.length - 1: Rectangle {
+                    height: 1px;
+                    background: Theme.border;
+                }
+            }
+        }
+    }
+}
+
+component QuoteRow inherits HorizontalLayout {
+    in property <BlockData> block;
+    spacing: Theme.pad-l;
+    Rectangle {
+        width: 3px;
+        border-radius: 1px;
+        background: Theme.border-strong;
+    }
+    RichText {
+        rich: root.block.rich;
+        text-color: Theme.text-muted;
+        message: root.block.message;
+        row-id: root.block.id;
+        horizontal-stretch: 1;
+    }
+}
+
+component UserRow inherits Rectangle {
+    in property <BlockData> block;
+    // Width of the row content, from the row (see TableRow).
+    in property <length> available;
+    property <length> pad-h: 14px;
+    property <length> max-bubble: max(160px, root.available * 0.82);
+    property <length> natural: max(measure.preferred-width + 2px, chips.preferred-width) + 2 * root.pad-h;
+    // The message could not be sent: a caption under the bubble says so.
+    property <bool> unsent: root.block.status == 3;
+    property <length> caption-height: root.unsent ? 20px : 0px;
+    min-height: bubble-layout.preferred-height + root.caption-height;
+
+    measure := Text {
+        visible: false;
+        width: 0px;
+        height: 0px;
+        text: root.block.text;
+        font-size: Theme.font-size;
+        font-family: Theme.ui-font;
+    }
+
+    Rectangle {
+        x: root.width - self.width;
+        y: 0;
+        width: min(root.natural, root.max-bubble);
+        height: bubble-layout.preferred-height;
+        background: Theme.accent-soft;
+        border-radius: 12px;
+        border-width: root.unsent ? 1px : 0px;
+        border-color: Theme.danger;
+
+        bubble-layout := VerticalLayout {
+            padding-left: root.pad-h;
+            padding-right: root.pad-h;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: root.block.lines.length > 0 ? Theme.pad-s : 0px;
+            if root.block.text != "": SelectableText {
+                text: root.block.text;
+                text-color: root.block.status == 1 ? Theme.text-muted : Theme.text;
+                message: true;
+                row-id: root.block.id;
+            }
+            chips := HorizontalLayout {
+                spacing: Theme.pad-s;
+                alignment: end;
+                for chip in root.block.lines: Rectangle {
+                    height: 20px;
+                    width: chip-text.preferred-width + 2 * Theme.pad-m;
+                    border-radius: 10px;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    chip-text := Text {
+                        text: chip.text;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-size-small;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.unsent: Text {
+        x: 0;
+        y: bubble-layout.preferred-height;
+        width: root.width - 4px;
+        height: root.caption-height;
+        text: root.block.detail;
+        color: Theme.danger;
+        font-size: Theme.font-size-small;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+component ReasoningRow inherits Rectangle {
+    in property <BlockData> block;
+    height: 24px;
+
+    touch := TouchArea {
+        enabled: root.block.expandable;
+        mouse-cursor: root.block.expandable ? pointer : default;
+        clicked => {
+            TranscriptState.toggle-block(root.block.id);
+        }
+    }
+    HorizontalLayout {
+        spacing: Theme.pad-s;
+        alignment: start;
+        Chevron {
+            open: root.block.expanded;
+            tint: root.block.expandable ? Theme.text-faint : transparent;
+        }
+        if root.block.status == 1: StatusGlyph {
+            status: 1;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.block.status == 1 ? "Thinking" : "Thought";
+            color: Theme.text-faint;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.block.title;
+            color: touch.has-hover ? Theme.text : Theme.text-muted;
+            font-italic: true;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+// Command execution: header with status and command, optional output.
+component ExecRow inherits Card {
+    in property <BlockData> block;
+
+    VerticalLayout {
+        header := Rectangle {
+            height: 32px;
+            border-radius: Theme.radius;
+            background: touch.has-hover && root.block.expandable ? Theme.hover : transparent;
+            touch := TouchArea {
+                enabled: root.block.expandable;
+                mouse-cursor: root.block.expandable ? pointer : default;
+                clicked => {
+                    TranscriptState.toggle-block(root.block.id);
+                }
+            }
+            HorizontalLayout {
+                padding-left: Theme.pad-m;
+                padding-right: Theme.pad-m;
+                spacing: Theme.pad-m;
+                StatusGlyph {
+                    status: root.block.status;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.block.meta;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.block.title;
+                    font-family: Theme.mono-font;
+                    font-size: Look.code-font-size;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if root.block.detail != "": Text {
+                    text: root.block.detail;
+                    color: root.block.status == 3 ? Theme.danger : Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                    vertical-alignment: center;
+                }
+                if root.block.expandable: Chevron {
+                    open: root.block.expanded;
+                }
+            }
+        }
+        if root.block.text != "": VerticalLayout {
+            padding: Theme.pad-xs;
+            padding-top: 0;
+            OutputBox {
+                text: root.block.text;
+                row-id: root.block.id;
+                show-copy: root.block.copyable && root.block.expanded;
+            }
+        }
+    }
+}
+
+// Read / list / search commands, shown compactly.
+component ExploreRow inherits Rectangle {
+    in property <BlockData> block;
+    height: 22px;
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            TranscriptState.toggle-block(root.block.id);
+        }
+    }
+    HorizontalLayout {
+        spacing: Theme.pad-m;
+        padding-left: Theme.pad-m;
+        StatusGlyph {
+            status: root.block.status == 2 ? 0 : root.block.status;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.block.meta;
+            color: Theme.text-muted;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.block.title;
+            color: touch.has-hover ? Theme.text : Theme.text-muted;
+            font-family: Theme.mono-font;
+            font-size: Look.code-font-size;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.block.detail != "": Text {
+            text: root.block.detail;
+            color: Theme.danger;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component PatchSummaryRow inherits HorizontalLayout {
+    in property <BlockData> block;
+    spacing: Theme.pad-m;
+    height: 26px;
+    StatusGlyph {
+        status: root.block.status;
+        y: (parent.height - self.height) / 2;
+    }
+    Text {
+        text: root.block.title;
+        color: Theme.text;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    Counts {
+        added: root.block.added;
+        removed: root.block.removed;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+    }
+    if root.block.detail != "": Text {
+        text: root.block.detail;
+        color: root.block.status == 3 ? Theme.danger : Theme.text-muted;
+        font-size: Theme.font-size-small;
+        vertical-alignment: center;
+    }
+}
+
+component PatchFileRow inherits Card {
+    in property <BlockData> block;
+    // Part of a multi-file patch (attached under the summary row).
+    property <bool> nested: root.block.gap == 0;
+
+    VerticalLayout {
+        Rectangle {
+            height: 32px;
+            border-radius: Theme.radius;
+            background: toggle-touch.has-hover ? Theme.hover : transparent;
+            toggle-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    TranscriptState.toggle-block(root.block.id);
+                }
+            }
+            HorizontalLayout {
+                padding-left: Theme.pad-m;
+                padding-right: Theme.pad-s;
+                spacing: Theme.pad-m;
+                if !root.nested: StatusGlyph {
+                    status: root.block.status;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.block.meta;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                path := Text {
+                    text: root.block.title;
+                    color: root.block.target != "" ? (path-touch.has-hover ? Theme.accent.darker(15%) : Theme.accent) : Theme.text;
+                    font-family: Theme.mono-font;
+                    font-size: Look.code-font-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    path-touch := TouchArea {
+                        enabled: root.block.target != "";
+                        mouse-cursor: root.block.target != "" ? pointer : default;
+                        clicked => {
+                            TranscriptState.block-action(root.block.id, "open-file");
+                        }
+                    }
+                }
+                Counts {
+                    added: root.block.added;
+                    removed: root.block.removed;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                if root.block.detail != "": Text {
+                    text: root.block.detail;
+                    color: root.block.status == 3 ? Theme.danger : Theme.text-muted;
+                    font-size: Theme.font-size-small;
+                    vertical-alignment: center;
+                }
+                LinkButton {
+                    text: "Open diff";
+                    text-color: Theme.text-muted;
+                    y: (parent.height - self.height) / 2;
+                    clicked => {
+                        TranscriptState.block-action(root.block.id, "open-diff");
+                    }
+                }
+                Chevron {
+                    open: root.block.expanded;
+                }
+            }
+        }
+        if root.block.expanded: Rectangle {
+            background: Theme.surface-sunken;
+            clip: true;
+            border-radius: Theme.radius-small;
+            min-height: diff-lines.preferred-height;
+            diff-lines := VerticalLayout {
+                padding-top: Theme.pad-s;
+                padding-bottom: Theme.pad-s;
+                for line in root.block.lines: Rectangle {
+                    height: Look.line-height;
+                    background: line.kind == 1 ? Theme.diff-add-bg : line.kind == 2 ? Theme.diff-del-bg : transparent;
+                    HorizontalLayout {
+                        spacing: Theme.pad-m;
+                        Text {
+                            width: 44px;
+                            text: line.gutter;
+                            color: Theme.text-faint;
+                            font-family: Theme.mono-font;
+                            font-size: Look.code-font-size;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: line.text;
+                            color: line.kind == 1 ? Theme.diff-add-fg
+                                : line.kind == 2 ? Theme.diff-del-fg
+                                : line.kind >= 3 ? Theme.text-faint
+                                : Theme.text;
+                            font-family: Theme.mono-font;
+                            font-size: Look.code-font-size;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MCP / dynamic tool / web search / image card.
+component ToolRow inherits Card {
+    in property <BlockData> block;
+
+    VerticalLayout {
+        Rectangle {
+            height: 32px;
+            border-radius: Theme.radius;
+            background: touch.has-hover && root.block.expandable ? Theme.hover : transparent;
+            touch := TouchArea {
+                enabled: root.block.expandable;
+                mouse-cursor: root.block.expandable ? pointer : default;
+                clicked => {
+                    TranscriptState.toggle-block(root.block.id);
+                }
+            }
+            HorizontalLayout {
+                padding-left: Theme.pad-m;
+                padding-right: Theme.pad-m;
+                spacing: Theme.pad-m;
+                StatusGlyph {
+                    status: root.block.status;
+                    y: (parent.height - self.height) / 2;
+                }
+                if root.block.meta != "web" && root.block.meta != "image": Text {
+                    text: root.block.meta;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.block.title;
+                    color: Theme.text;
+                    font-family: root.block.meta == "web" || root.block.meta == "image" ? Theme.ui-font : Theme.mono-font;
+                    font-size: root.block.meta == "web" || root.block.meta == "image" ? Theme.font-size : Look.code-font-size;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.block.text;
+                    color: Theme.text-muted;
+                    font-family: root.block.meta == "web" || root.block.meta == "image" ? Theme.ui-font : Theme.mono-font;
+                    font-size: Look.code-font-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if root.block.detail != "": Text {
+                    text: root.block.detail;
+                    color: Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                    vertical-alignment: center;
+                }
+                if root.block.expandable: Chevron {
+                    open: root.block.expanded;
+                }
+            }
+        }
+        if root.block.lines.length > 0: VerticalLayout {
+            padding: Theme.pad-xs;
+            padding-top: 0;
+            Rectangle {
+                background: Theme.surface-sunken;
+                border-radius: Theme.radius-small;
+                clip: true;
+                min-height: result-lines.preferred-height;
+                result-lines := VerticalLayout {
+                    padding: Theme.pad-m;
+                    padding-left: Theme.pad-l;
+                    for line in root.block.lines: Text {
+                        text: line.text;
+                        color: line.kind == 4 ? Theme.text-faint : root.block.status == 3 ? Theme.danger : Theme.text-muted;
+                        font-family: Theme.mono-font;
+                        font-size: Look.code-font-size;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.block.expanded && root.block.copyable: LinkButton {
+                    x: parent.width - self.width - Theme.pad-s;
+                    y: Theme.pad-s;
+                    width: 44px;
+                    height: 20px;
+                    text: "Copy";
+                    text-color: Theme.text-muted;
+                    clicked => {
+                        TranscriptState.copy-block(root.block.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Sub-agent card; agents and the title open their threads.
+component AgentRow inherits Card {
+    in property <BlockData> block;
+
+    VerticalLayout {
+        padding: Theme.pad-m;
+        padding-left: Theme.pad-m;
+        spacing: Theme.pad-s;
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+            StatusGlyph {
+                status: root.block.status;
+            }
+            Text {
+                text: root.block.title;
+                color: root.block.target != "" ? Theme.accent : Theme.text;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+                TouchArea {
+                    enabled: root.block.target != "";
+                    mouse-cursor: root.block.target != "" ? pointer : default;
+                    clicked => {
+                        TranscriptState.block-action(root.block.id, "open-agent");
+                    }
+                }
+            }
+            if root.block.detail != "": Text {
+                text: root.block.detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+            }
+        }
+        if root.block.text != "": Text {
+            text: root.block.text;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+        for line[i] in root.block.lines: HorizontalLayout {
+            spacing: Theme.pad-m;
+            padding-left: 24px;
+            StatusGlyph {
+                status: line.kind;
+            }
+            Text {
+                text: line.text;
+                color: agent-touch.has-hover ? Theme.accent.darker(15%) : Theme.accent;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+                agent-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        TranscriptState.line-clicked(root.block.id, i);
+                    }
+                }
+            }
+        }
+    }
+}
+
+component NoticeRow inherits Rectangle {
+    in property <BlockData> block;
+    property <bool> muted: root.block.tone == 1;
+    background: root.block.tone == 5 ? Theme.danger-soft
+        : root.block.tone == 4 ? Theme.warning-soft
+        : root.block.tone == 3 ? Theme.surface-alt
+        : transparent;
+    border-radius: Theme.radius;
+
+    HorizontalLayout {
+        padding-left: root.muted ? 0 : Theme.pad-l;
+        padding-right: root.muted ? 0 : Theme.pad-m;
+        padding-top: root.muted ? 2px : Theme.pad-m;
+        padding-bottom: root.muted ? 2px : Theme.pad-m;
+        spacing: Theme.pad-m;
+        if root.block.status != 0: StatusGlyph {
+            status: root.block.status;
+        }
+        if root.block.status == 0: Text {
+            text: root.block.tone == 5 ? "✕" : root.block.tone == 4 ? "!" : "i";
+            width: 16px;
+            color: root.block.tone == 5 ? Theme.danger : root.block.tone == 4 ? Theme.warning : Theme.text-faint;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            if root.block.title != "": Text {
+                text: root.block.title;
+                color: root.block.tone == 5 ? Theme.danger : root.block.tone == 4 ? Theme.warning : Theme.text;
+                font-weight: 600;
+                font-size: root.muted ? Theme.font-size-small : Theme.font-size;
+            }
+            if root.block.text != "": SelectableText {
+                text: root.block.text;
+                text-color: root.muted ? Theme.text-muted : Theme.text;
+                text-size: root.muted ? Theme.font-size-small : Theme.font-size;
+                row-id: root.block.id;
+            }
+            if root.block.detail != "": Text {
+                text: root.block.detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+            for line in root.block.lines: Text {
+                text: line.text;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+        }
+        if root.block.copyable: LinkButton {
+            text: "Copy";
+            text-color: Theme.text-muted;
+            clicked => {
+                TranscriptState.copy-block(root.block.id);
+            }
+        }
+    }
+}
+
+component SeparatorRow inherits HorizontalLayout {
+    in property <BlockData> block;
+    spacing: Theme.pad-m;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    Rectangle {
+        height: 1px;
+        y: (parent.height - 1px) / 2;
+        background: Theme.border;
+        horizontal-stretch: 1;
+    }
+    Text {
+        text: root.block.title;
+        color: root.block.tone == 4 ? Theme.warning : Theme.text-faint;
+        font-size: Theme.font-size-small;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        height: 1px;
+        y: (parent.height - 1px) / 2;
+        background: Theme.border;
+        horizontal-stretch: 1;
+    }
+}
+
+component PlanUpdateRow inherits Card {
+    in property <BlockData> block;
+
+    VerticalLayout {
+        padding: Theme.pad-m;
+        padding-left: Theme.pad-l;
+        spacing: Theme.pad-s;
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+            Text {
+                text: root.block.title;
+                color: Theme.text;
+                font-weight: 600;
+            }
+            Text {
+                text: root.block.detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.block.text != "": Text {
+            text: root.block.text;
+            color: Theme.text-muted;
+            font-italic: true;
+            wrap: word-wrap;
+        }
+        for step in root.block.lines: HorizontalLayout {
+            spacing: Theme.pad-m;
+            Rectangle {
+                width: 16px;
+                height: Look.line-height;
+                if step.kind == 2: StatusGlyph {
+                    y: (parent.height - self.height) / 2;
+                    status: 2;
+                }
+                if step.kind != 2: Rectangle {
+                    x: 3px;
+                    y: (parent.height - self.height) / 2;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    border-width: 1.5px;
+                    border-color: step.kind == 1 ? Theme.accent : Theme.text-faint;
+                    if step.kind == 1: Rectangle {
+                        x: 2.5px;
+                        y: 2.5px;
+                        width: 5px;
+                        height: 5px;
+                        border-radius: 2.5px;
+                        background: Theme.accent;
+                    }
+                }
+            }
+            Text {
+                text: step.text;
+                color: step.kind == 2 ? Theme.text-faint : step.kind == 1 ? Theme.text : Theme.text-muted;
+                font-weight: step.kind == 1 ? 600 : 400;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+}
+
+component SectionRow inherits HorizontalLayout {
+    in property <BlockData> block;
+    spacing: Theme.pad-m;
+    if root.block.status != 0: StatusGlyph {
+        status: root.block.status;
+    }
+    Text {
+        text: root.block.title;
+        color: root.block.tone == 2 ? Theme.accent : Theme.text;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.block.text;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+}
+
+// Title row of a framed card: a recap or a message from another tab, with
+// a link to the sending tab and a Copy action.
+component CardHeaderRow inherits HorizontalLayout {
+    in property <BlockData> block;
+    property <bool> cross-tab: root.block.target != "";
+    spacing: Theme.pad-m;
+    min-height: 24px;
+
+    if root.block.status != 0: StatusGlyph {
+        status: root.block.status;
+        y: (parent.height - self.height) / 2;
+    }
+    if root.block.status == 0 && root.cross-tab: Rectangle {
+        width: 14px;
+        Path {
+            y: (parent.height - 14px) / 2;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 14;
+            viewbox-height: 14;
+            commands: "M 1.5 4.5 L 1.5 11.5 L 12.5 11.5 L 12.5 4.5 Z M 1.5 4.5 L 7 8.5 L 12.5 4.5";
+            stroke: Theme.accent;
+            stroke-width: 1.3px;
+        }
+    }
+    if root.block.meta != "": Text {
+        text: root.block.meta;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.block.title;
+        color: Theme.text;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+        min-width: min(self.preferred-width, 80px);
+    }
+    if root.block.text != "": Text {
+        text: root.block.text;
+        color: Theme.text-faint;
+        font-size: Theme.font-size-small;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+    }
+    if root.block.detail != "": LinkButton {
+        text: root.block.detail;
+        y: (parent.height - self.height) / 2;
+        clicked => {
+            TranscriptState.block-action(root.block.id, "open-source");
+        }
+    }
+    if root.block.copyable: LinkButton {
+        text: "Copy";
+        text-color: Theme.text-muted;
+        y: (parent.height - self.height) / 2;
+        clicked => {
+            TranscriptState.block-action(root.block.id, "copy-message");
+        }
+    }
+}
+
+// One row of the transcript list.
+component BlockRow inherits Rectangle {
+    in property <BlockData> block;
+    in property <bool> last;
+    property <length> side: max(Theme.pad-xl, (self.width - Look.max-content-width) / 2);
+    property <length> indent: (root.block.kind == 1 ? 0 : root.block.level * 20px) + (root.block.kind == 4 ? 0 : root.block.quote * 16px);
+    property <length> gap-top: root.block.gap == 2 ? 16px
+        : root.block.gap == 1 ? 6px
+        : root.block.gap == 3 ? 3px
+        : (root.block.kind == 11 ? 4px : 0px);
+    // Plan blocks share an accent bar on the left.
+    property <bool> plan: root.block.tone == 2 && root.block.kind != 17;
+    // Rows of a framed card draw one box together: the top row its top
+    // edge, the bottom row its bottom edge (`Frame` in blocks.rs).
+    property <bool> framed: root.block.frame != 0;
+    property <bool> frame-top: root.block.frame == 1 || root.block.frame == 4;
+    property <bool> frame-bottom: root.block.frame == 3 || root.block.frame == 4;
+    property <length> frame-pad: root.framed ? Theme.pad-l : 0px;
+    property <length> bottom-space: root.last ? 24px : 0px;
+
+    min-height: content.min-height;
+    preferred-height: content.preferred-height;
+    // The box of a middle row extends past the row; clipping cuts its top
+    // and bottom edges off.
+    clip: root.framed;
+
+    if root.framed: Rectangle {
+        x: root.side;
+        width: root.width - 2 * root.side;
+        y: root.frame-top ? root.gap-top : -16px;
+        height: (root.frame-bottom ? root.height - root.bottom-space : root.height + 16px) - self.y;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius;
+    }
+
+    content := VerticalLayout {
+        padding-left: root.side + root.frame-pad + root.indent;
+        padding-right: root.side + root.frame-pad;
+        padding-top: (root.plan ? 0 : root.gap-top) + (root.frame-top ? Theme.pad-m : 0px);
+        padding-bottom: root.bottom-space + (root.frame-bottom ? Theme.pad-m : 0px);
+
+        HorizontalLayout {
+            spacing: Theme.pad-l;
+            if root.plan: Rectangle {
+                width: 3px;
+                background: Theme.accent-soft;
+            }
+            VerticalLayout {
+                padding-top: root.plan ? root.gap-top : 0;
+                horizontal-stretch: 1;
+                if root.block.kind == 0: ParagraphRow {
+                    block: root.block;
+                }
+                if root.block.kind == 1: HeadingRow {
+                    block: root.block;
+                }
+                if root.block.kind == 2: CodeRow {
+                    block: root.block;
+                }
+                if root.block.kind == 3: TableRow {
+                    block: root.block;
+                    available: root.width - 2 * root.side - 2 * root.frame-pad - root.indent - (root.plan ? 3px + Theme.pad-l : 0px);
+                }
+                if root.block.kind == 4: QuoteRow {
+                    block: root.block;
+                }
+                if root.block.kind == 5: Rectangle {
+                    height: 17px;
+                    Rectangle {
+                        y: 8px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+                if root.block.kind == 6: UserRow {
+                    block: root.block;
+                    available: root.width - 2 * root.side - 2 * root.frame-pad - root.indent;
+                }
+                if root.block.kind == 7: ReasoningRow {
+                    block: root.block;
+                }
+                if root.block.kind == 8: ExecRow {
+                    block: root.block;
+                }
+                if root.block.kind == 9: ExploreRow {
+                    block: root.block;
+                }
+                if root.block.kind == 10: PatchSummaryRow {
+                    block: root.block;
+                }
+                if root.block.kind == 11: PatchFileRow {
+                    block: root.block;
+                }
+                if root.block.kind == 12: ToolRow {
+                    block: root.block;
+                }
+                if root.block.kind == 13: AgentRow {
+                    block: root.block;
+                }
+                if root.block.kind == 14: NoticeRow {
+                    block: root.block;
+                }
+                if root.block.kind == 15: SeparatorRow {
+                    block: root.block;
+                }
+                if root.block.kind == 16: PlanUpdateRow {
+                    block: root.block;
+                }
+                if root.block.kind == 17: SectionRow {
+                    block: root.block;
+                }
+                if root.block.kind == 18: CardHeaderRow {
+                    block: root.block;
+                }
+                if root.block.footer: HorizontalLayout {
+                    padding-top: Theme.pad-s;
+                    spacing: Theme.pad-xs;
+                    alignment: start;
+                    LinkButton {
+                        text: "Copy";
+                        text-color: Theme.text-faint;
+                        clicked => {
+                            TranscriptState.block-action(root.block.id, "copy-message");
+                        }
+                    }
+                    LinkButton {
+                        text: "Quote";
+                        text-color: Theme.text-faint;
+                        clicked => {
+                            TranscriptState.block-action(root.block.id, "quote");
+                        }
+                    }
+                    LinkButton {
+                        text: "Send to tab…";
+                        text-color: Theme.text-faint;
+                        clicked => {
+                            TranscriptState.block-action(root.block.id, "forward");
+                        }
+                    }
+                    LinkButton {
+                        text: "Select text…";
+                        text-color: Theme.text-faint;
+                        clicked => {
+                            TranscriptState.block-action(root.block.id, "view-text");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Pill shown over the list (load older, jump to latest).
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <bool> busy;
+    callback clicked();
+    height: 28px;
+    width: pill-layout.preferred-width;
+    border-radius: 14px;
+    background: touch.has-hover ? Theme.hover : Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+    pill-layout := HorizontalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-l;
+        spacing: Theme.pad-s;
+        if root.busy: StatusGlyph {
+            status: 1;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component EmptyState inherits Rectangle {
+    property <bool> busy: TranscriptState.loading || TranscriptState.phase == 1;
+    property <[string]> suggestions: ["Explain this codebase", "Find and fix a bug", "Write tests for recent changes"];
+
+    VerticalLayout {
+        alignment: center;
+        spacing: Theme.pad-l;
+        padding: Theme.pad-xl;
+
+        if root.busy: HorizontalLayout {
+            alignment: center;
+            spacing: Theme.pad-m;
+            StatusGlyph {
+                status: 1;
+            }
+            Text {
+                text: TranscriptState.loading ? "Loading conversation…" : "Starting a new thread…";
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+        }
+        if !root.busy && TranscriptState.phase == 5: VerticalLayout {
+            spacing: Theme.pad-m;
+            alignment: center;
+            Text {
+                text: "This thread could not be opened";
+                color: Theme.text;
+                font-size: Theme.font-size-large;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: TranscriptState.error-text;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                max-width: 560px;
+            }
+        }
+        if !root.busy && TranscriptState.phase != 5: VerticalLayout {
+            spacing: Theme.pad-m;
+            alignment: center;
+            Text {
+                text: "What should we work on?";
+                color: Theme.text;
+                font-size: Theme.font-size-title;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: TranscriptState.folder != "" ? "Codex is working in " + TranscriptState.folder + ". " + TranscriptState.empty-hint : TranscriptState.empty-hint;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+            }
+            if root.width >= 620px: HorizontalLayout {
+                alignment: center;
+                spacing: Theme.pad-m;
+                padding-top: Theme.pad-m;
+                for suggestion in root.suggestions: FlatButton {
+                    text: suggestion;
+                    clicked => {
+                        TranscriptState.suggestion(suggestion);
+                    }
+                }
+            }
+            if root.width < 620px: VerticalLayout {
+                alignment: center;
+                spacing: Theme.pad-s;
+                padding-top: Theme.pad-m;
+                for suggestion in root.suggestions: HorizontalLayout {
+                    alignment: center;
+                    FlatButton {
+                        text: suggestion;
+                        clicked => {
+                            TranscriptState.suggestion(suggestion);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component TranscriptView inherits Rectangle {
+    background: Theme.window-bg;
+    property <bool> empty: TranscriptState.blocks.length == 0;
+    property <int> scroll-request: TranscriptState.scroll-request;
+    property <int> scroll-top-request: TranscriptState.scroll-top-request;
+    property <length> status-height: TranscriptState.status-text != "" ? 30px : 0px;
+
+    function scroll-to-bottom() {
+        list.content-y = min(0px, list.visible-height - list.content-height);
+    }
+
+    changed scroll-request => {
+        self.scroll-to-bottom();
+    }
+    changed scroll-top-request => {
+        list.content-y = 0;
+    }
+
+    list := ListView {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height - root.status-height;
+        visible: !root.empty;
+
+        for block[index] in TranscriptState.blocks: BlockRow {
+            block: block;
+            last: index == TranscriptState.blocks.length - 1;
+        }
+
+        changed content-height => {
+            if TranscriptState.follow-tail {
+                root.scroll-to-bottom();
+            }
+        }
+        changed visible-height => {
+            if TranscriptState.follow-tail {
+                root.scroll-to-bottom();
+            }
+        }
+        scrolled => {
+            TranscriptState.follow-tail = self.content-y <= self.visible-height - self.content-height + 32px;
+            if -self.content-y < 2 * self.visible-height && TranscriptState.has-older && !TranscriptState.loading-older && !TranscriptState.older-failed {
+                TranscriptState.load-older(false);
+            }
+        }
+    }
+
+    if root.empty: EmptyState {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    if !root.empty && (TranscriptState.loading-older || (TranscriptState.has-older && list.content-y > -48px)): Pill {
+        x: (parent.width - self.width) / 2;
+        y: Theme.pad-m;
+        text: TranscriptState.loading-older ? "Loading earlier messages…"
+            : TranscriptState.older-failed ? "Couldn't load earlier messages · Retry"
+            : "Load earlier messages";
+        busy: TranscriptState.loading-older;
+        clicked => {
+            TranscriptState.load-older(true);
+        }
+    }
+
+    if !root.empty && !TranscriptState.follow-tail && list.content-height > list.visible-height: Pill {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - root.status-height - self.height - Theme.pad-l;
+        text: "Jump to latest";
+        clicked => {
+            TranscriptState.follow-tail = true;
+            root.scroll-to-bottom();
+        }
+    }
+
+    if TranscriptState.status-text != "": Rectangle {
+        x: 0;
+        y: parent.height - root.status-height;
+        width: parent.width;
+        height: root.status-height;
+        HorizontalLayout {
+            padding-left: max(Theme.pad-xl, (parent.width - Look.max-content-width) / 2);
+            padding-right: Theme.pad-xl;
+            spacing: Theme.pad-m;
+            StatusGlyph {
+                status: 1;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: TranscriptState.status-text;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: TranscriptState.phase == 3 ? "Esc to interrupt" : "";
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+}

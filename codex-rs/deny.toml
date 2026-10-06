@@ -155,6 +155,21 @@ exceptions = [
     # Each entry is the crate and version constraint, and its specific allow
     # list
     #{ allow = ["Zlib"], crate = "adler32" },
+    # Slint (codex-gui) is GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR
+    # LicenseRef-Slint-Software-3.0. codex-gui uses the royalty-free desktop
+    # license, which requires the AboutSlint attribution shown in Help > About.
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "slint" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "slint-build" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "slint-macros" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-core" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-core-macros" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-common" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-compiler" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-backend-selector" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-backend-winit" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-renderer-femtovg" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-renderer-software" },
+    { allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "i-slint-renderer-skia" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,

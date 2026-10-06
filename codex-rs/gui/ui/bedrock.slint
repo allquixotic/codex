@@ -1,0 +1,762 @@
+// Providers page (Settings › Providers): the current model provider, Amazon
+// Bedrock setup (Mantle or Runtime endpoint), and local models from Ollama
+// or LM Studio.
+//
+// OWNER: bedrock feature (src/settings/bedrock/). All state is pushed from
+// Rust through `BedrockState`; text inputs are read back when an action runs.
+
+import { ComboBox, LineEdit, ProgressIndicator, ScrollView, Spinner } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton, Badge, Divider } from "theme.slint";
+import {
+    BedrockMethodItem,
+    Card,
+    FieldLabel,
+    KeyValue,
+    MethodRow,
+    Notice,
+    SectionHeader,
+    SegmentButton,
+    StatusDot,
+} from "bedrock_widgets.slint";
+
+export { BedrockMethodItem }
+
+export struct LocalModelItem {
+    name: string,
+    in-use: bool,
+}
+
+// One local model server (Ollama or LM Studio).
+export struct LocalServerView {
+    // Provider id: "ollama" or "lmstudio".
+    id: string,
+    title: string,
+    // 0 unknown, 1 checking, 2 running, 3 unavailable.
+    state: int,
+    status: string,
+    // Hint, error, or compatibility warning.
+    message: string,
+    // False when the server cannot serve Codex (for example too old).
+    can-use: bool,
+    can-pull: bool,
+    models: [LocalModelItem],
+}
+
+export global BedrockState {
+    // Current provider (from config/read and account/read).
+    in property <string> provider-label: "…";
+    in property <string> model-label;
+    in property <bool> model-is-default;
+    in property <string> aws-profile;
+    in property <string> aws-region;
+    in property <string> account-label;
+    in property <string> origin-note;
+    in property <bool> status-loading;
+    in property <string> status-error;
+    // Non-empty while the running server uses another provider than config.toml.
+    in property <string> restart-note;
+    // Non-empty when connected to a daemon or remote app-server.
+    in property <string> connection-note;
+    in property <bool> can-revert;
+    in property <bool> bedrock-active;
+
+    // Bedrock form.
+    in property <int> endpoint: 0;
+    in property <string> endpoint-note;
+    in property <bool> discovering;
+    in property <string> discover-note;
+    in property <[BedrockMethodItem]> methods;
+    in property <int> method-index: -1;
+    in-out property <string> manual-profile;
+    in-out property <string> api-key;
+    in-out property <string> access-key-id;
+    in-out property <string> secret-access-key;
+    in-out property <string> session-token;
+    in property <[string]> regions;
+    in-out property <int> region-index: -1;
+    in property <string> region-note;
+    in property <bool> gov-cloud;
+    // A higher-precedence config layer pins the provider.
+    in property <bool> locked;
+
+    // Progress and results of the last action.
+    // Areas: 0 Bedrock form, 1 current provider, 2 local models, 3 default model.
+    in property <bool> busy;
+    in property <int> busy-area;
+    in property <string> busy-text;
+    in property <bool> busy-cancellable;
+    in property <int> notice-area: -1;
+    // Notice kinds as in `Notice`: 0 info, 1 success, 3 error.
+    in property <int> notice-kind;
+    in property <string> notice-text;
+
+    // Default model (when Bedrock is the running provider).
+    in property <[string]> models;
+    in-out property <int> model-index: -1;
+    in property <string> models-note;
+    in property <bool> models-loading;
+    in property <bool> model-dirty;
+
+    // Local model servers.
+    in property <[LocalServerView]> local-servers;
+    in-out property <string> pull-name;
+    in property <bool> pulling;
+    in property <string> pull-status;
+    // 0..1, or negative while the size is unknown.
+    in property <float> pull-progress: -1;
+    in property <string> pull-error;
+    in property <string> pull-success;
+
+    // Vertical scroll offset of the page (negative when scrolled down).
+    in-out property <length> scroll-y;
+
+    callback page-shown();
+    callback refresh();
+    callback rescan();
+    callback set-endpoint(int);
+    callback select-method(int);
+    callback select-region(int);
+    callback form-edited();
+    callback validate();
+    callback apply();
+    callback cancel();
+    callback revert();
+    callback restart-now();
+    callback select-model(int);
+    callback save-model();
+    callback local-refresh(string);
+    callback local-use(string, string);
+    callback pull();
+    callback cancel-pull();
+    // Opens a documentation link: "setup-guide" or "gov-cloud".
+    callback open-link(string);
+}
+
+// Spinner, progress text, and an optional Cancel button.
+component BusyRow inherits HorizontalLayout {
+    spacing: Theme.pad-m;
+
+    VerticalLayout {
+        alignment: center;
+        Spinner {
+            indeterminate: true;
+            width: 16px;
+            height: 16px;
+        }
+    }
+    Text {
+        text: BedrockState.busy-text;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+    }
+    if BedrockState.busy-cancellable: FlatButton {
+        text: "Cancel";
+        clicked => {
+            BedrockState.cancel();
+        }
+    }
+}
+
+component CurrentProviderCard inherits Card {
+    SectionHeader {
+        title: "Current provider";
+        description: "Where new threads send model requests.";
+
+        if BedrockState.status-loading: VerticalLayout {
+            alignment: start;
+            Spinner {
+                indeterminate: true;
+                width: 16px;
+                height: 16px;
+            }
+        }
+        if BedrockState.can-revert: VerticalLayout {
+            alignment: start;
+            FlatButton {
+                text: "Switch back to OpenAI";
+                enabled: !BedrockState.busy && !BedrockState.locked;
+                clicked => {
+                    BedrockState.revert();
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        spacing: Theme.pad-m;
+        KeyValue {
+            label: "Provider";
+            value: BedrockState.provider-label;
+        }
+        KeyValue {
+            label: "Model";
+            value: BedrockState.model-label;
+            muted: BedrockState.model-is-default;
+        }
+        if BedrockState.aws-profile != "": KeyValue {
+            label: "AWS profile";
+            value: BedrockState.aws-profile;
+        }
+        if BedrockState.aws-region != "": KeyValue {
+            label: "AWS Region";
+            value: BedrockState.aws-region;
+        }
+        if BedrockState.account-label != "": KeyValue {
+            label: "Account";
+            value: BedrockState.account-label;
+        }
+    }
+
+    if BedrockState.connection-note != "": Notice {
+        kind: 0;
+        text: BedrockState.connection-note;
+    }
+    if BedrockState.origin-note != "": Notice {
+        kind: BedrockState.locked ? 2 : 0;
+        text: BedrockState.origin-note;
+    }
+    if BedrockState.restart-note != "": Notice {
+        kind: 2;
+        text: BedrockState.restart-note;
+        VerticalLayout {
+            alignment: center;
+            FlatButton {
+                text: "Restart now";
+                enabled: !BedrockState.busy;
+                clicked => {
+                    BedrockState.restart-now();
+                }
+            }
+        }
+    }
+    if BedrockState.status-error != "": Notice {
+        kind: 3;
+        text: BedrockState.status-error;
+    }
+    if BedrockState.busy && BedrockState.busy-area == 1: BusyRow { }
+    // The current notice, when it belongs to this area.
+    if BedrockState.notice-area == 1 && BedrockState.notice-text != "": Notice {
+        kind: BedrockState.notice-kind;
+        text: BedrockState.notice-text;
+    }
+}
+
+component CredentialFields inherits VerticalLayout {
+    in property <int> fields;
+    spacing: Theme.pad-s;
+    padding-left: Theme.pad-xl + Theme.pad-l;
+
+    if root.fields == 1: VerticalLayout {
+        spacing: Theme.pad-xs;
+        FieldLabel {
+            text: "Profile name";
+        }
+        LineEdit {
+            text <=> BedrockState.manual-profile;
+            placeholder-text: "For example: my-sso-profile";
+            enabled: !BedrockState.busy;
+            edited => {
+                BedrockState.form-edited();
+            }
+            accepted => {
+                BedrockState.apply();
+            }
+        }
+    }
+    if root.fields == 2: VerticalLayout {
+        spacing: Theme.pad-s;
+        FieldLabel {
+            text: "Access key ID";
+        }
+        LineEdit {
+            text <=> BedrockState.access-key-id;
+            placeholder-text: "AKIA…";
+            enabled: !BedrockState.busy;
+            edited => {
+                BedrockState.form-edited();
+            }
+        }
+        FieldLabel {
+            text: "Secret access key";
+        }
+        LineEdit {
+            text <=> BedrockState.secret-access-key;
+            input-type: password;
+            enabled: !BedrockState.busy;
+            edited => {
+                BedrockState.form-edited();
+            }
+        }
+        FieldLabel {
+            text: "Session token (optional, for temporary credentials)";
+        }
+        LineEdit {
+            text <=> BedrockState.session-token;
+            input-type: password;
+            enabled: !BedrockState.busy;
+            edited => {
+                BedrockState.form-edited();
+            }
+        }
+    }
+    if root.fields == 3: VerticalLayout {
+        spacing: Theme.pad-xs;
+        FieldLabel {
+            text: "Amazon Bedrock API key";
+        }
+        LineEdit {
+            text <=> BedrockState.api-key;
+            input-type: password;
+            placeholder-text: "ABSK…";
+            enabled: !BedrockState.busy;
+            edited => {
+                BedrockState.form-edited();
+            }
+            accepted => {
+                BedrockState.apply();
+            }
+        }
+    }
+}
+
+component BedrockCard inherits Card {
+    SectionHeader {
+        title: "Amazon Bedrock";
+        description: "Run OpenAI models in your AWS account. Codex restarts to switch providers.";
+    }
+
+    // Endpoint
+    VerticalLayout {
+        spacing: Theme.pad-s;
+        FieldLabel {
+            text: "Endpoint";
+        }
+        HorizontalLayout {
+            spacing: Theme.pad-s;
+            alignment: start;
+            SegmentButton {
+                text: "Mantle";
+                checked: BedrockState.endpoint == 0;
+                enabled: !BedrockState.busy;
+                clicked => {
+                    BedrockState.set-endpoint(0);
+                }
+            }
+            SegmentButton {
+                text: "Runtime";
+                checked: BedrockState.endpoint == 1;
+                enabled: !BedrockState.busy;
+                clicked => {
+                    BedrockState.set-endpoint(1);
+                }
+            }
+        }
+        Text {
+            text: BedrockState.endpoint-note;
+            color: Theme.text-muted;
+            font-size: Theme.font-size-small;
+            wrap: word-wrap;
+        }
+    }
+
+    // Credentials
+    VerticalLayout {
+        spacing: Theme.pad-s;
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+            FieldLabel {
+                text: "Credentials";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if BedrockState.discovering: Spinner {
+                indeterminate: true;
+                width: 14px;
+                height: 14px;
+            }
+            LinkButton {
+                text: "Scan again";
+                enabled: !BedrockState.discovering && !BedrockState.busy;
+                clicked => {
+                    BedrockState.rescan();
+                }
+            }
+        }
+        if BedrockState.discover-note != "": Notice {
+            kind: 0;
+            text: BedrockState.discover-note;
+            VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Setup guide";
+                    clicked => {
+                        BedrockState.open-link("setup-guide");
+                    }
+                }
+            }
+        }
+        for method[index] in BedrockState.methods: VerticalLayout {
+            spacing: Theme.pad-s;
+            MethodRow {
+                item: method;
+                selected: index == BedrockState.method-index;
+                enabled: !BedrockState.busy;
+                clicked => {
+                    BedrockState.select-method(index);
+                }
+            }
+            if index == BedrockState.method-index && method.fields != 0: CredentialFields {
+                fields: method.fields;
+            }
+        }
+    }
+
+    // Region
+    VerticalLayout {
+        spacing: Theme.pad-s;
+        FieldLabel {
+            text: "AWS Region";
+        }
+        HorizontalLayout {
+            alignment: start;
+            ComboBox {
+                min-width: 300px;
+                model: BedrockState.regions;
+                current-index <=> BedrockState.region-index;
+                enabled: !BedrockState.busy;
+                selected => {
+                    BedrockState.select-region(self.current-index);
+                }
+            }
+        }
+        if BedrockState.region-note != "": Text {
+            text: BedrockState.region-note;
+            color: Theme.text-muted;
+            font-size: Theme.font-size-small;
+            wrap: word-wrap;
+        }
+        if BedrockState.gov-cloud: Notice {
+            kind: 2;
+            text: "AWS GovCloud: make sure you or your administrator have read the application configuration and security guidance before using Codex here.";
+            VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Read guidance";
+                    text-color: Theme.warning;
+                    clicked => {
+                        BedrockState.open-link("gov-cloud");
+                    }
+                }
+            }
+        }
+    }
+
+    // The current notice, when it belongs to this area.
+    if BedrockState.notice-area == 0 && BedrockState.notice-text != "": Notice {
+        kind: BedrockState.notice-kind;
+        text: BedrockState.notice-text;
+    }
+
+    HorizontalLayout {
+        spacing: Theme.pad-m;
+        if BedrockState.busy && BedrockState.busy-area == 0: BusyRow {
+            horizontal-stretch: 1;
+        }
+        if !BedrockState.busy || BedrockState.busy-area != 0: Rectangle {
+            horizontal-stretch: 1;
+        }
+        FlatButton {
+            text: "Validate";
+            enabled: !BedrockState.busy && BedrockState.method-index >= 0;
+            clicked => {
+                BedrockState.validate();
+            }
+        }
+        FlatButton {
+            text: BedrockState.bedrock-active ? "Apply changes" : "Use Amazon Bedrock";
+            primary: true;
+            enabled: !BedrockState.busy && !BedrockState.locked && BedrockState.method-index >= 0;
+            clicked => {
+                BedrockState.apply();
+            }
+        }
+    }
+
+    if BedrockState.bedrock-active: Divider { }
+    if BedrockState.bedrock-active: VerticalLayout {
+        spacing: Theme.pad-s;
+        FieldLabel {
+            text: "Default model for new threads";
+        }
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+            alignment: start;
+            ComboBox {
+                min-width: 300px;
+                model: BedrockState.models;
+                current-index <=> BedrockState.model-index;
+                enabled: !BedrockState.busy && !BedrockState.models-loading && BedrockState.models.length > 0;
+                selected => {
+                    BedrockState.select-model(self.current-index);
+                }
+            }
+            FlatButton {
+                text: "Save";
+                primary: BedrockState.model-dirty;
+                enabled: BedrockState.model-dirty && !BedrockState.busy;
+                clicked => {
+                    BedrockState.save-model();
+                }
+            }
+            if BedrockState.models-loading: VerticalLayout {
+                alignment: center;
+                Spinner {
+                    indeterminate: true;
+                    width: 16px;
+                    height: 16px;
+                }
+            }
+        }
+        if BedrockState.models-note != "": Text {
+            text: BedrockState.models-note;
+            color: Theme.text-muted;
+            font-size: Theme.font-size-small;
+            wrap: word-wrap;
+        }
+        // The current notice, when it belongs to this area.
+        if BedrockState.notice-area == 3 && BedrockState.notice-text != "": Notice {
+            kind: BedrockState.notice-kind;
+            text: BedrockState.notice-text;
+        }
+    }
+}
+
+component LocalServerSection inherits VerticalLayout {
+    in property <LocalServerView> server;
+    spacing: Theme.pad-s;
+
+    HorizontalLayout {
+        spacing: Theme.pad-m;
+        VerticalLayout {
+            alignment: center;
+            StatusDot {
+                state: root.server.state;
+            }
+        }
+        Text {
+            text: root.server.title;
+            color: Theme.text;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.server.status;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.server.state == 1: VerticalLayout {
+            alignment: center;
+            Spinner {
+                indeterminate: true;
+                width: 14px;
+                height: 14px;
+            }
+        }
+        LinkButton {
+            text: "Refresh";
+            enabled: root.server.state != 1;
+            clicked => {
+                BedrockState.local-refresh(root.server.id);
+            }
+        }
+    }
+
+    if root.server.message != "": Text {
+        text: root.server.message;
+        color: root.server.state == 2 ? Theme.warning : Theme.text-muted;
+        font-size: Theme.font-size-small;
+        wrap: word-wrap;
+    }
+
+    if root.server.state == 2 && root.server.models.length == 0: Text {
+        text: root.server.can-pull ? "No models installed yet. Pull one below." : "No models are loaded or downloaded yet. Download one in LM Studio.";
+        color: Theme.text-muted;
+        font-size: Theme.font-size-small;
+        wrap: word-wrap;
+    }
+
+    if root.server.state == 2 && root.server.models.length > 0: Rectangle {
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius-small;
+
+        VerticalLayout {
+            padding: 1px;
+            for model[index] in root.server.models: Rectangle {
+                // Rows with a badge and rows with a button line up.
+                min-height: 36px;
+                background: model-touch.has-hover ? Theme.hover : transparent;
+                border-radius: Theme.radius-small;
+                model-touch := TouchArea { }
+                HorizontalLayout {
+                    padding-left: Theme.pad-l;
+                    padding-right: Theme.pad-m;
+                    padding-top: Theme.pad-s;
+                    padding-bottom: Theme.pad-s;
+                    spacing: Theme.pad-m;
+                    Text {
+                        text: model.name;
+                        color: Theme.text;
+                        font-family: Theme.mono-font;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if model.in-use: VerticalLayout {
+                        alignment: center;
+                        Badge {
+                            text: "In use";
+                            fg: Theme.success;
+                            bg: Theme.success-soft;
+                        }
+                    }
+                    if !model.in-use: FlatButton {
+                        text: "Use";
+                        enabled: root.server.can-use && !BedrockState.busy && !BedrockState.locked;
+                        clicked => {
+                            BedrockState.local-use(root.server.id, model.name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.server.state == 2 && root.server.can-pull: VerticalLayout {
+        spacing: Theme.pad-s;
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+            LineEdit {
+                text <=> BedrockState.pull-name;
+                placeholder-text: "Model to pull, for example gpt-oss:20b";
+                enabled: !BedrockState.pulling;
+                horizontal-stretch: 1;
+                accepted => {
+                    BedrockState.pull();
+                }
+            }
+            if !BedrockState.pulling: FlatButton {
+                text: "Pull";
+                enabled: BedrockState.pull-name != "";
+                clicked => {
+                    BedrockState.pull();
+                }
+            }
+            if BedrockState.pulling: FlatButton {
+                text: "Cancel";
+                clicked => {
+                    BedrockState.cancel-pull();
+                }
+            }
+        }
+        if BedrockState.pulling: VerticalLayout {
+            spacing: Theme.pad-xs;
+            ProgressIndicator {
+                height: 6px;
+                indeterminate: BedrockState.pull-progress < 0;
+                progress: max(0, BedrockState.pull-progress);
+            }
+            Text {
+                text: BedrockState.pull-status;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+            }
+        }
+        if BedrockState.pull-error != "": Notice {
+            kind: 3;
+            text: BedrockState.pull-error;
+        }
+        if BedrockState.pull-success != "": Notice {
+            kind: 1;
+            text: BedrockState.pull-success;
+        }
+    }
+}
+
+component LocalModelsCard inherits Card {
+    SectionHeader {
+        title: "Local models";
+        description: "Use a model served on this machine by Ollama or LM Studio.";
+    }
+    if BedrockState.busy && BedrockState.busy-area == 2: BusyRow { }
+    // The current notice, when it belongs to this area.
+    if BedrockState.notice-area == 2 && BedrockState.notice-text != "": Notice {
+        kind: BedrockState.notice-kind;
+        text: BedrockState.notice-text;
+    }
+    for server[index] in BedrockState.local-servers: VerticalLayout {
+        spacing: Theme.pad-l;
+        if index > 0: Divider { }
+        LocalServerSection {
+            server: server;
+        }
+    }
+}
+
+export component BedrockPage inherits Rectangle {
+    background: Theme.window-bg;
+
+    init => {
+        BedrockState.page-shown();
+    }
+
+    ScrollView {
+        width: 100%;
+        height: 100%;
+        content-y <=> BedrockState.scroll-y;
+
+        VerticalLayout {
+            padding: Theme.pad-xl;
+            spacing: Theme.pad-l + Theme.pad-s;
+            alignment: start;
+
+            HorizontalLayout {
+                spacing: Theme.pad-m;
+                VerticalLayout {
+                    spacing: Theme.pad-xs;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "Model providers";
+                        color: Theme.text;
+                        font-size: Theme.font-size-title;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: "Choose where Codex sends model requests: OpenAI, Amazon Bedrock, or a local model server.";
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: start;
+                    FlatButton {
+                        text: "Refresh";
+                        enabled: !BedrockState.busy;
+                        clicked => {
+                            BedrockState.refresh();
+                        }
+                    }
+                }
+            }
+
+            CurrentProviderCard { }
+            BedrockCard { }
+            LocalModelsCard { }
+        }
+    }
+}

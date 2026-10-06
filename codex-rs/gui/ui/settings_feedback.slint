@@ -1,0 +1,205 @@
+// Settings › Feedback: send a report to OpenAI through `feedback/upload`,
+// optionally with logs and a thread's history.
+//
+// OWNER: settings feature (src/settings/feedback.rs).
+
+import { ScrollView, ComboBox, TextEdit, CheckBox } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton } from "theme.slint";
+import { SettingsState } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, Card } from "settings_widgets.slint";
+import { ServerDownBanner } from "settings_config.slint";
+
+component FieldLabel inherits VerticalLayout {
+    in property <string> text;
+    padding-top: Theme.pad-s;
+    Text {
+        text: root.text;
+        color: Theme.text;
+        font-weight: 600;
+    }
+}
+
+export component FeedbackPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+    property <bool> editable: SettingsState.server-ready && !SettingsState.feedback-busy && SettingsState.feedback-disabled == "";
+
+    VerticalLayout {
+        PageHeader {
+            title: "Send feedback";
+            subtitle: "Tell OpenAI what worked and what did not. Reports help improve Codex.";
+            side-padding: root.side;
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            // Size the content to its preferred height; the default (min
+            // height) squeezes wrapped text and text inputs.
+            content-height: content.preferred-height;
+            content := VerticalLayout {
+                alignment: start;
+                padding-left: root.side;
+                padding-right: root.side;
+                padding-bottom: Theme.pad-xl;
+                spacing: Theme.pad-m;
+
+                if SettingsState.feedback-disabled != "": Banner {
+                    tone: 2;
+                    text: SettingsState.feedback-disabled;
+                }
+
+                if SettingsState.feedback-result != "": Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        Text {
+                            text: SettingsState.feedback-result;
+                            color: Theme.success;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            Text {
+                                text: "Feedback ID";
+                                color: Theme.text-muted;
+                                vertical-alignment: center;
+                            }
+                            TextInput {
+                                text: SettingsState.feedback-result-id;
+                                read-only: true;
+                                color: Theme.text;
+                                font-family: Theme.mono-font;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        if SettingsState.feedback-issue-url != "": Text {
+                            text: "To follow up, open a GitHub issue that mentions this ID.";
+                            color: Theme.text-muted;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            alignment: end;
+                            FlatButton {
+                                text: "Copy ID";
+                                clicked => {
+                                    SettingsState.copy-text(SettingsState.feedback-result-id);
+                                }
+                            }
+                            if SettingsState.feedback-issue-url != "": FlatButton {
+                                text: "Open an issue";
+                                clicked => {
+                                    SettingsState.open-url(SettingsState.feedback-issue-url);
+                                }
+                            }
+                            FlatButton {
+                                text: "Send more feedback";
+                                primary: true;
+                                clicked => {
+                                    SettingsState.feedback-again();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if SettingsState.feedback-result == "": Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+
+                        FieldLabel {
+                            text: "What is this about?";
+                        }
+                        ComboBox {
+                            model: SettingsState.feedback-categories;
+                            current-index <=> SettingsState.feedback-category;
+                            enabled: root.editable;
+                        }
+
+                        FieldLabel {
+                            text: "Details";
+                        }
+                        TextEdit {
+                            height: 140px;
+                            wrap: word-wrap;
+                            text <=> SettingsState.feedback-text;
+                            enabled: root.editable;
+                            edited => {
+                                SettingsState.feedback-error = "";
+                            }
+                            placeholder-text: SettingsState.feedback-category == 2 ? "What went well? (optional)" : "What happened, and what did you expect?";
+                        }
+
+                        FieldLabel {
+                            text: "Thread";
+                        }
+                        ComboBox {
+                            model: SettingsState.feedback-threads;
+                            current-index <=> SettingsState.feedback-thread-index;
+                            enabled: root.editable;
+                        }
+                        Text {
+                            text: "The report references this thread so the team can look at the conversation.";
+                            color: Theme.text-faint;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            CheckBox {
+                                checked <=> SettingsState.feedback-include-logs;
+                                enabled: root.editable;
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 2px;
+                                Text {
+                                    text: "Include logs";
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "Attaches recent Codex logs and, when a thread is selected, its full conversation history, including file contents and command output it contains.";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.font-size-small;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        if SettingsState.feedback-error != "": Text {
+                            text: SettingsState.feedback-error;
+                            color: Theme.danger;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            alignment: end;
+                            if SettingsState.feedback-busy: Text {
+                                text: "Sending…";
+                                color: Theme.text-muted;
+                                vertical-alignment: center;
+                            }
+                            FlatButton {
+                                text: "Send feedback";
+                                primary: root.editable;
+                                enabled: root.editable;
+                                clicked => {
+                                    SettingsState.feedback-submit();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

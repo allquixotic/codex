@@ -1,0 +1,910 @@
+// Info pane for the active thread: settings summary, context usage, plan,
+// turn changes, background terminals, goal, queued messages, sub-agents,
+// hooks, MCP servers, cross-tab messages, and account rate limits.
+//
+// Rust (src/info.rs) fills `InfoState` for the active thread tab. Section
+// collapse state lives here and is shared by all tabs.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton, Badge, Divider } from "theme.slint";
+
+export struct InfoField {
+    label: string,
+    value: string,
+}
+
+export enum InfoStepStatus { pending, in-progress, completed }
+
+export struct InfoPlanStep {
+    text: string,
+    status: InfoStepStatus,
+}
+
+export struct InfoDiffFile {
+    path: string,
+    name: string,
+    added: int,
+    removed: int,
+    // "new", "deleted", or empty.
+    note: string,
+}
+
+export enum InfoAgentStatus { starting, running, idle, completed, failed, stopped }
+
+export struct InfoAgent {
+    thread-id: string,
+    label: string,
+    detail: string,
+    status: InfoAgentStatus,
+    status-text: string,
+}
+
+export struct InfoQueued {
+    id: string,
+    text: string,
+}
+
+export struct InfoHook {
+    label: string,
+    detail: string,
+}
+
+export enum InfoMcpStatus { starting, ready, failed, cancelled }
+
+export struct InfoMcp {
+    name: string,
+    status: InfoMcpStatus,
+    status-text: string,
+    error: string,
+}
+
+export struct InfoMail {
+    incoming: bool,
+    peer: string,
+    peer-thread-id: string,
+    text: string,
+    time: string,
+}
+
+// A command running in the background of the thread (`/ps`).
+export struct InfoTerminal {
+    process-id: string,
+    command: string,
+    // Relative to the thread's folder; empty when it is that folder.
+    cwd: string,
+    stopping: bool,
+}
+
+export struct InfoLimit {
+    label: string,
+    // 0..1
+    used: float,
+    percent: string,
+    detail: string,
+}
+
+export global InfoState {
+    // Thread summary.
+    in property <string> title;
+    in property <string> folder-name;
+    in property <string> folder-path;
+    in property <[InfoField]> fields;
+
+    // Context window and token usage.
+    in property <bool> has-usage;
+    in property <bool> has-window;
+    // 0..1 of the context window in use.
+    in property <float> context-used;
+    in property <string> context-label;
+    in property <string> context-detail;
+    in property <string> usage-detail;
+
+    // Plan from `turn/plan/updated`.
+    in property <bool> has-plan;
+    in property <string> plan-explanation;
+    in property <string> plan-progress;
+    in property <[InfoPlanStep]> plan;
+
+    // Aggregated diff of the latest turn that changed files.
+    in property <bool> has-diff;
+    in property <string> diff-summary;
+    in property <int> diff-added;
+    in property <int> diff-removed;
+    in property <[InfoDiffFile]> diff-files;
+    in property <string> diff-more;
+
+    // Goal (`thread/goal/*`); hidden when the goals feature is off.
+    in property <bool> goal-available;
+    in property <bool> has-goal;
+    in property <string> goal-objective;
+    in property <string> goal-status;
+    in property <string> goal-detail;
+    in property <bool> goal-paused;
+
+    // Background terminals; the section shows when non-empty or after /ps.
+    in property <bool> terminals-shown;
+    in property <string> terminals-summary;
+    in property <string> terminals-note;
+    in property <[InfoTerminal]> terminals;
+
+    in property <[InfoQueued]> queue;
+    in property <bool> queue-can-send;
+
+    in property <[InfoAgent]> agents;
+    in property <[InfoHook]> hooks;
+    in property <[InfoMcp]> mcp;
+    in property <string> mcp-summary;
+
+    in property <bool> xtab-enabled;
+    in property <[InfoMail]> mailbox;
+
+    in property <[InfoLimit]> limits;
+    in property <string> limits-note;
+
+    in-out property <bool> context-collapsed;
+    in-out property <bool> plan-collapsed;
+    in-out property <bool> diff-collapsed;
+    in-out property <bool> terminals-collapsed;
+    in-out property <bool> goal-collapsed;
+    in-out property <bool> queue-collapsed;
+    in-out property <bool> agents-collapsed;
+    in-out property <bool> hooks-collapsed;
+    in-out property <bool> mcp-collapsed;
+    in-out property <bool> xtab-collapsed;
+    in-out property <bool> limits-collapsed;
+
+    callback open-folder();
+    callback open-diff();
+    callback open-agent(thread-id: string);
+    // "up", "down", "send", "delete"
+    callback queue-action(id: string, action: string);
+    // "set", "pause", "resume", "clear"
+    callback goal-action(action: string);
+    callback set-xtab(enabled: bool);
+    // "stop" (one process) or "stop-all" (process id empty).
+    callback terminal-action(process-id: string, action: string);
+    callback open-peer(thread-id: string);
+}
+
+component SectionHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> summary;
+    in property <color> summary-color: Theme.text-faint;
+    in-out property <bool> collapsed;
+
+    height: 32px;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.collapsed = !root.collapsed; }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-l;
+        spacing: Theme.pad-s;
+
+        Text {
+            text: root.collapsed ? "▸" : "▾";
+            width: 10px;
+            color: Theme.text-faint;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.title;
+            color: touch.has-hover ? Theme.text : Theme.text-muted;
+            font-size: Theme.font-size-small;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.summary;
+            color: root.summary-color;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component SectionBody inherits VerticalLayout {
+    padding-left: Theme.pad-l;
+    padding-right: Theme.pad-l;
+    padding-bottom: Theme.pad-l;
+    spacing: Theme.pad-s;
+}
+
+component Meter inherits Rectangle {
+    // 0..1
+    in property <float> value;
+
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.dark ? Theme.surface-sunken : Theme.border;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.value, 0, 1);
+        height: parent.height;
+        border-radius: 3px;
+        background: root.value >= 0.9 ? Theme.danger
+            : root.value >= 0.7 ? Theme.warning
+            : Theme.accent;
+    }
+}
+
+component Dot inherits Rectangle {
+    in property <color> fill;
+
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: fill;
+}
+
+component StepIcon inherits Rectangle {
+    in property <InfoStepStatus> status;
+
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    background: status == InfoStepStatus.completed ? Theme.success : transparent;
+    border-width: status == InfoStepStatus.completed ? 0px : 1px;
+    border-color: status == InfoStepStatus.in-progress ? Theme.accent : Theme.border-strong;
+
+    if status == InfoStepStatus.in-progress: Rectangle {
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.accent;
+    }
+    if status == InfoStepStatus.completed: Text {
+        text: "✓";
+        color: Theme.text-on-accent;
+        font-size: 9px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Renderer-safe on/off switch.
+component Toggle inherits Rectangle {
+    in property <bool> checked;
+    callback toggled();
+
+    width: 30px;
+    height: 18px;
+    border-radius: 9px;
+    background: root.checked ? Theme.accent : Theme.border-strong;
+
+    Rectangle {
+        x: root.checked ? root.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: #ffffff;
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}
+
+component FieldRow inherits HorizontalLayout {
+    in property <InfoField> field;
+
+    spacing: Theme.pad-m;
+
+    Text {
+        text: field.label;
+        width: 68px;
+        color: Theme.text-faint;
+        font-size: Theme.font-size-small;
+    }
+    Text {
+        text: field.value;
+        color: Theme.text;
+        font-size: Theme.font-size-small;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+}
+
+global InfoColors {
+    public pure function agent(status: InfoAgentStatus) -> color {
+        return status == InfoAgentStatus.running ? Theme.accent
+            : status == InfoAgentStatus.starting ? Theme.text-faint
+            : status == InfoAgentStatus.completed ? Theme.success
+            : status == InfoAgentStatus.failed ? Theme.danger
+            : Theme.border-strong;
+    }
+
+    public pure function mcp(status: InfoMcpStatus) -> color {
+        return status == InfoMcpStatus.ready ? Theme.success
+            : status == InfoMcpStatus.failed ? Theme.danger
+            : status == InfoMcpStatus.starting ? Theme.accent
+            : Theme.border-strong;
+    }
+}
+
+export component InfoPane inherits Rectangle {
+    background: Theme.surface-alt;
+
+    ScrollView {
+        VerticalLayout {
+            alignment: start;
+
+            // Summary
+            VerticalLayout {
+                padding: Theme.pad-l;
+                spacing: Theme.pad-s;
+
+                Text {
+                    text: InfoState.title;
+                    color: Theme.text;
+                    font-size: Theme.font-size-large;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                folder := Rectangle {
+                    height: 20px;
+
+                    folder-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { InfoState.open-folder(); }
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.pad-s;
+                        Text {
+                            text: InfoState.folder-name;
+                            color: Theme.accent;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: "↗";
+                            color: folder-touch.has-hover ? Theme.accent : Theme.text-faint;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    Tooltip {
+                        text: @markdown("\{InfoState.folder-path}");
+                    }
+                }
+                for field in InfoState.fields: FieldRow {
+                    field: field;
+                }
+            }
+
+            // Context window
+            Divider { }
+            SectionHeader {
+                title: "Context";
+                summary: InfoState.has-usage ? InfoState.context-label : "";
+                collapsed <=> InfoState.context-collapsed;
+            }
+            if !InfoState.context-collapsed: SectionBody {
+                if !InfoState.has-usage: Text {
+                    text: "No tokens used yet.";
+                    color: Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                }
+                if InfoState.has-usage && InfoState.has-window: Meter {
+                    value: InfoState.context-used;
+                }
+                if InfoState.has-usage && InfoState.context-detail != "": Text {
+                    text: InfoState.context-detail;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-size-small;
+                    wrap: word-wrap;
+                }
+                if InfoState.has-usage: Text {
+                    text: InfoState.usage-detail;
+                    color: Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Plan
+            if InfoState.has-plan: Divider { }
+            if InfoState.has-plan: SectionHeader {
+                title: "Plan";
+                summary: InfoState.plan-progress;
+                collapsed <=> InfoState.plan-collapsed;
+            }
+            if InfoState.has-plan && !InfoState.plan-collapsed: SectionBody {
+                if InfoState.plan-explanation != "": Text {
+                    text: InfoState.plan-explanation;
+                    color: Theme.text-muted;
+                    font-size: Theme.font-size-small;
+                    wrap: word-wrap;
+                }
+                for step in InfoState.plan: HorizontalLayout {
+                    spacing: Theme.pad-m;
+
+                    VerticalLayout {
+                        alignment: start;
+                        padding-top: 1px;
+                        StepIcon {
+                            status: step.status;
+                        }
+                    }
+                    Text {
+                        text: step.text;
+                        color: step.status == InfoStepStatus.completed ? Theme.text-muted : Theme.text;
+                        font-weight: step.status == InfoStepStatus.in-progress ? 600 : 400;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+
+            // Turn changes
+            if InfoState.has-diff: Divider { }
+            if InfoState.has-diff: SectionHeader {
+                title: "Changes";
+                summary: InfoState.diff-summary;
+                collapsed <=> InfoState.diff-collapsed;
+            }
+            if InfoState.has-diff && !InfoState.diff-collapsed: SectionBody {
+                for file in InfoState.diff-files: Rectangle {
+                    height: 20px;
+
+                    HorizontalLayout {
+                        spacing: Theme.pad-s;
+
+                        Text {
+                            text: file.name;
+                            color: Theme.text;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if file.note != "": Text {
+                            text: file.note;
+                            color: Theme.text-faint;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "+" + file.added;
+                            color: Theme.diff-add-fg;
+                            font-size: Theme.font-size-small;
+                            font-family: Theme.mono-font;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "−" + file.removed;
+                            color: Theme.diff-del-fg;
+                            font-size: Theme.font-size-small;
+                            font-family: Theme.mono-font;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Tooltip {
+                        text: @markdown("\{file.path}");
+                    }
+                }
+                if InfoState.diff-more != "": Text {
+                    text: InfoState.diff-more;
+                    color: Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    padding-top: Theme.pad-xs;
+                    FlatButton {
+                        text: "Open diff";
+                        clicked => { InfoState.open-diff(); }
+                    }
+                }
+            }
+
+            // Background terminals
+            if InfoState.terminals-shown: Divider { }
+            if InfoState.terminals-shown: SectionHeader {
+                title: "Background terminals";
+                summary: InfoState.terminals-summary;
+                summary-color: InfoState.terminals.length > 0 ? Theme.accent : Theme.text-faint;
+                collapsed <=> InfoState.terminals-collapsed;
+            }
+            if InfoState.terminals-shown && !InfoState.terminals-collapsed: SectionBody {
+                if InfoState.terminals-note != "": Text {
+                    text: InfoState.terminals-note;
+                    color: Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                    wrap: word-wrap;
+                }
+                for terminal in InfoState.terminals: Rectangle {
+                    height: terminal.cwd == "" ? 26px : 38px;
+
+                    HorizontalLayout {
+                        spacing: Theme.pad-m;
+
+                        Dot {
+                            fill: terminal.stopping ? Theme.text-faint : Theme.accent;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+
+                            Text {
+                                text: terminal.command;
+                                color: terminal.stopping ? Theme.text-muted : Theme.text;
+                                font-size: Theme.font-size-small;
+                                font-family: Theme.mono-font;
+                                overflow: elide;
+                            }
+                            if terminal.cwd != "": Text {
+                                text: terminal.cwd;
+                                color: Theme.text-faint;
+                                font-size: Theme.font-size-small;
+                                overflow: elide;
+                            }
+                        }
+                        LinkButton {
+                            text: terminal.stopping ? "Stopping…" : "Stop";
+                            text-color: Theme.danger;
+                            enabled: !terminal.stopping;
+                            clicked => { InfoState.terminal-action(terminal.process-id, "stop"); }
+                        }
+                    }
+                    Tooltip {
+                        text: @markdown("\{terminal.command}");
+                    }
+                }
+                if InfoState.terminals.length > 1: HorizontalLayout {
+                    alignment: start;
+                    LinkButton {
+                        text: "Stop all";
+                        text-color: Theme.danger;
+                        clicked => { InfoState.terminal-action("", "stop-all"); }
+                    }
+                }
+            }
+
+            // Goal
+            if InfoState.goal-available: Divider { }
+            if InfoState.goal-available: SectionHeader {
+                title: "Goal";
+                summary: InfoState.has-goal ? InfoState.goal-status : "";
+                collapsed <=> InfoState.goal-collapsed;
+            }
+            if InfoState.goal-available && !InfoState.goal-collapsed: SectionBody {
+                if InfoState.has-goal: Text {
+                    text: InfoState.goal-objective;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                if InfoState.has-goal && InfoState.goal-detail != "": Text {
+                    text: InfoState.goal-detail;
+                    color: Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                    wrap: word-wrap;
+                }
+                if !InfoState.has-goal: Text {
+                    text: "No goal set. A goal keeps the agent working toward an objective across turns.";
+                    color: Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Theme.pad-xs;
+
+                    LinkButton {
+                        text: InfoState.has-goal ? "Edit…" : "Set goal…";
+                        clicked => { InfoState.goal-action("set"); }
+                    }
+                    if InfoState.has-goal: LinkButton {
+                        text: InfoState.goal-paused ? "Resume" : "Pause";
+                        clicked => { InfoState.goal-action(InfoState.goal-paused ? "resume" : "pause"); }
+                    }
+                    if InfoState.has-goal: LinkButton {
+                        text: "Clear";
+                        text-color: Theme.danger;
+                        clicked => { InfoState.goal-action("clear"); }
+                    }
+                }
+            }
+
+            // Queued messages
+            if InfoState.queue.length > 0: Divider { }
+            if InfoState.queue.length > 0: SectionHeader {
+                title: "Queued messages";
+                summary: InfoState.queue.length;
+                collapsed <=> InfoState.queue-collapsed;
+            }
+            if InfoState.queue.length > 0 && !InfoState.queue-collapsed: SectionBody {
+                for item[index] in InfoState.queue: Rectangle {
+                    height: 26px;
+                    border-radius: Theme.radius-small;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+
+                    HorizontalLayout {
+                        padding-left: Theme.pad-m;
+                        padding-right: Theme.pad-xs;
+                        spacing: 0px;
+
+                        Text {
+                            text: item.text;
+                            color: Theme.text;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        LinkButton {
+                            text: "↑";
+                            width: 20px;
+                            text-color: Theme.text-muted;
+                            visible: index > 0;
+                            clicked => { InfoState.queue-action(item.id, "up"); }
+                        }
+                        LinkButton {
+                            text: "↓";
+                            width: 20px;
+                            text-color: Theme.text-muted;
+                            visible: index < InfoState.queue.length - 1;
+                            clicked => { InfoState.queue-action(item.id, "down"); }
+                        }
+                        LinkButton {
+                            text: "Send";
+                            enabled: InfoState.queue-can-send;
+                            clicked => { InfoState.queue-action(item.id, "send"); }
+                        }
+                        LinkButton {
+                            text: "×";
+                            width: 20px;
+                            text-color: Theme.text-muted;
+                            clicked => { InfoState.queue-action(item.id, "delete"); }
+                        }
+                    }
+                }
+            }
+
+            // Sub-agents
+            if InfoState.agents.length > 0: Divider { }
+            if InfoState.agents.length > 0: SectionHeader {
+                title: "Sub-agents";
+                summary: InfoState.agents.length;
+                collapsed <=> InfoState.agents-collapsed;
+            }
+            if InfoState.agents.length > 0 && !InfoState.agents-collapsed: SectionBody {
+                for agent in InfoState.agents: Rectangle {
+                    height: 38px;
+                    border-radius: Theme.radius-small;
+                    background: agent-touch.has-hover ? Theme.hover : transparent;
+
+                    agent-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { InfoState.open-agent(agent.thread-id); }
+                    }
+                    HorizontalLayout {
+                        padding-left: Theme.pad-xs;
+                        padding-right: Theme.pad-xs;
+                        spacing: Theme.pad-m;
+
+                        Dot {
+                            fill: InfoColors.agent(agent.status);
+                            y: (parent.height - self.height) / 2;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+
+                            Text {
+                                text: agent.label;
+                                color: Theme.text;
+                                font-size: Theme.font-size-small;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            if agent.detail != "": Text {
+                                text: agent.detail;
+                                color: Theme.text-faint;
+                                font-size: Theme.font-size-small;
+                                overflow: elide;
+                            }
+                        }
+                        Text {
+                            text: agent.status-text;
+                            color: Theme.text-faint;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Hooks currently running
+            if InfoState.hooks.length > 0: Divider { }
+            if InfoState.hooks.length > 0: SectionHeader {
+                title: "Running hooks";
+                summary: InfoState.hooks.length;
+                collapsed <=> InfoState.hooks-collapsed;
+            }
+            if InfoState.hooks.length > 0 && !InfoState.hooks-collapsed: SectionBody {
+                for hook in InfoState.hooks: HorizontalLayout {
+                    spacing: Theme.pad-m;
+
+                    Dot {
+                        fill: Theme.accent;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: hook.label;
+                        color: Theme.text;
+                        font-size: Theme.font-size-small;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: hook.detail;
+                        color: Theme.text-faint;
+                        font-size: Theme.font-size-small;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+
+            // MCP servers
+            if InfoState.mcp.length > 0: Divider { }
+            if InfoState.mcp.length > 0: SectionHeader {
+                title: "MCP servers";
+                summary: InfoState.mcp-summary;
+                collapsed <=> InfoState.mcp-collapsed;
+            }
+            if InfoState.mcp.length > 0 && !InfoState.mcp-collapsed: SectionBody {
+                for server in InfoState.mcp: VerticalLayout {
+                    spacing: Theme.pad-xs;
+
+                    HorizontalLayout {
+                        spacing: Theme.pad-m;
+
+                        Dot {
+                            fill: InfoColors.mcp(server.status);
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: server.name;
+                            color: Theme.text;
+                            font-size: Theme.font-size-small;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: server.status-text;
+                            color: server.status == InfoMcpStatus.failed ? Theme.danger : Theme.text-faint;
+                            font-size: Theme.font-size-small;
+                        }
+                    }
+                    if server.error != "": Text {
+                        text: server.error;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-size-small;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // Cross-tab messages
+            Divider { }
+            SectionHeader {
+                title: "Cross-tab messages";
+                summary: InfoState.mailbox.length > 0 ? "\{InfoState.mailbox.length}" : "";
+                collapsed <=> InfoState.xtab-collapsed;
+            }
+            if !InfoState.xtab-collapsed: SectionBody {
+                HorizontalLayout {
+                    spacing: Theme.pad-m;
+
+                    Text {
+                        text: "Let agents in other tabs message this thread";
+                        color: Theme.text-muted;
+                        font-size: Theme.font-size-small;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Toggle {
+                            checked: InfoState.xtab-enabled;
+                            toggled => { InfoState.set-xtab(!InfoState.xtab-enabled); }
+                        }
+                    }
+                }
+                for mail in InfoState.mailbox: Rectangle {
+                    border-radius: Theme.radius-small;
+                    background: mail-touch.has-hover ? Theme.hover : transparent;
+                    height: mail-layout.preferred-height;
+
+                    mail-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { InfoState.open-peer(mail.peer-thread-id); }
+                    }
+                    mail-layout := VerticalLayout {
+                        padding: Theme.pad-xs;
+                        spacing: Theme.pad-xs;
+
+                        HorizontalLayout {
+                            spacing: Theme.pad-s;
+                            Text {
+                                text: (mail.incoming ? "From " : "To ") + mail.peer;
+                                color: Theme.text;
+                                font-size: Theme.font-size-small;
+                                font-weight: 600;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: mail.time;
+                                color: Theme.text-faint;
+                                font-size: Theme.font-size-small;
+                            }
+                        }
+                        Text {
+                            text: mail.text;
+                            color: Theme.text-muted;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // Account rate limits
+            if InfoState.limits.length > 0: Divider { }
+            if InfoState.limits.length > 0: SectionHeader {
+                title: "Usage limits";
+                summary: InfoState.limits-note;
+                collapsed <=> InfoState.limits-collapsed;
+            }
+            if InfoState.limits.length > 0 && !InfoState.limits-collapsed: SectionBody {
+                spacing: Theme.pad-m;
+                for limit in InfoState.limits: VerticalLayout {
+                    spacing: Theme.pad-xs;
+
+                    HorizontalLayout {
+                        Text {
+                            text: limit.label;
+                            color: Theme.text;
+                            font-size: Theme.font-size-small;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: limit.percent;
+                            color: Theme.text-muted;
+                            font-size: Theme.font-size-small;
+                        }
+                    }
+                    Meter {
+                        value: limit.used;
+                    }
+                    if limit.detail != "": Text {
+                        text: limit.detail;
+                        color: Theme.text-faint;
+                        font-size: Theme.font-size-small;
+                    }
+                }
+            }
+
+        }
+    }
+}

@@ -1,0 +1,172 @@
+// Design tokens and small shared widgets.
+//
+// Everything here must render identically on the femtovg and pure software
+// renderers: flat fills, 1px borders, small radii, no drop shadows, no
+// rotation, no opacity layers over text.
+
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    // 0 = follow the system, 1 = light, 2 = dark.
+    in-out property <int> mode: 0;
+    // The OS scheme as the window system reports it (set from Rust). Used
+    // after a light/dark override was set back to "system": the palette is
+    // then released to `ColorScheme.unknown`, which the std widgets resolve
+    // to the live system scheme, but which user code cannot read.
+    in-out property <bool> system-dark: false;
+    out property <bool> dark: mode == 2 || (mode == 0 && (Palette.color-scheme == ColorScheme.dark
+        || (Palette.color-scheme == ColorScheme.unknown && system-dark)));
+
+    // Surfaces
+    out property <color> window-bg: dark ? #1b1c1f : #f6f6f7;
+    out property <color> surface: dark ? #232428 : #ffffff;
+    out property <color> surface-alt: dark ? #2b2d32 : #f0f1f3;
+    out property <color> surface-sunken: dark ? #18191c : #ebecef;
+    out property <color> hover: dark ? #33363c : #e6e8ec;
+    out property <color> selected: dark ? #3a3f4b : #dde4f3;
+    out property <color> border: dark ? #3a3c42 : #d9dbe0;
+    out property <color> border-strong: dark ? #50535a : #b9bcc4;
+
+    // Text
+    out property <color> text: dark ? #e6e7ea : #1d1f24;
+    out property <color> text-muted: dark ? #a0a3ab : #5f636d;
+    out property <color> text-faint: dark ? #767a83 : #8a8e97;
+    out property <color> text-on-accent: #ffffff;
+
+    // Accents and status
+    out property <color> accent: dark ? #5b8def : #2f6fe0;
+    out property <color> accent-soft: dark ? #26324a : #e3ecfc;
+    out property <color> success: dark ? #4cb782 : #1f8a55;
+    out property <color> success-soft: dark ? #1f3a2d : #e2f4ea;
+    out property <color> warning: dark ? #e0a84a : #a86a00;
+    out property <color> warning-soft: dark ? #3d3220 : #fbf0dc;
+    out property <color> danger: dark ? #e5675f : #c43b31;
+    out property <color> danger-soft: dark ? #45252a : #fbe5e3;
+
+    // Diff
+    out property <color> diff-add-bg: dark ? #1f3a2a : #e6f6ec;
+    out property <color> diff-del-bg: dark ? #44262a : #fbe9e8;
+    out property <color> diff-add-fg: dark ? #7fd4a3 : #1d7a46;
+    out property <color> diff-del-fg: dark ? #f19a94 : #b3362c;
+    out property <color> diff-hunk-fg: dark ? #8ea7d9 : #4a64a8;
+
+    // Typography
+    in-out property <length> font-size: 13px;
+    out property <length> font-size-small: font-size - 2px;
+    out property <length> font-size-large: font-size + 3px;
+    out property <length> font-size-title: font-size + 7px;
+    in-out property <string> ui-font: "";
+    in-out property <string> mono-font: "Menlo";
+
+    // Spacing and shape
+    out property <length> pad-xs: 2px;
+    out property <length> pad-s: 4px;
+    out property <length> pad-m: 8px;
+    out property <length> pad-l: 12px;
+    out property <length> pad-xl: 20px;
+    out property <length> radius: 6px;
+    out property <length> radius-small: 4px;
+    out property <length> row-height: 28px;
+    out property <length> tab-height: 34px;
+}
+
+// Flat, renderer-safe button with an optional accent fill.
+export component FlatButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    in property <bool> checked: false;
+    in property <string> tooltip;
+    callback clicked();
+
+    min-height: 26px;
+    min-width: label.preferred-width + 2 * Theme.pad-l;
+    border-radius: Theme.radius-small;
+    border-width: (primary || danger) ? 0px : 1px;
+    border-color: Theme.border;
+    background: !enabled ? Theme.surface-alt
+        : primary ? (touch.pressed ? Theme.accent.darker(20%) : touch.has-hover ? Theme.accent.darker(10%) : Theme.accent)
+        : danger ? (touch.pressed ? Theme.danger.darker(20%) : touch.has-hover ? Theme.danger.darker(10%) : Theme.danger)
+        : checked ? Theme.selected
+        : touch.pressed ? Theme.selected
+        : touch.has-hover ? Theme.hover
+        : Theme.surface;
+
+    label := Text {
+        text: root.text;
+        font-size: Theme.font-size;
+        color: !root.enabled ? Theme.text-faint : (root.primary || root.danger) ? Theme.text-on-accent : Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Small text-only button used in toolbars and block headers.
+export component LinkButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <color> text-color: Theme.accent;
+    callback clicked();
+
+    min-height: 20px;
+    min-width: label.preferred-width + 2 * Theme.pad-s;
+    border-radius: Theme.radius-small;
+    background: touch.has-hover && enabled ? Theme.hover : transparent;
+
+    label := Text {
+        text: root.text;
+        font-size: Theme.font-size-small;
+        color: root.enabled ? root.text-color : Theme.text-faint;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Compact pill used for statuses and counters.
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> fg: Theme.text-muted;
+    in property <color> bg: Theme.surface-alt;
+
+    height: 18px;
+    width: label.preferred-width + 2 * Theme.pad-m;
+    border-radius: 9px;
+    background: bg;
+
+    label := Text {
+        text: root.text;
+        color: root.fg;
+        font-size: Theme.font-size-small;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+// 1px separator.
+export component Divider inherits Rectangle {
+    in property <bool> vertical: false;
+    background: Theme.border;
+    min-width: 1px;
+    min-height: 1px;
+    max-width: vertical ? 1px : 100000px;
+    max-height: vertical ? 100000px : 1px;
+    horizontal-stretch: vertical ? 0 : 1;
+    vertical-stretch: vertical ? 1 : 0;
+}

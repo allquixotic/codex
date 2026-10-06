@@ -1,0 +1,128 @@
+// State shared between Rust (src/files/) and the file and diff views.
+//
+// The global always holds the active file tab's state; Rust saves the
+// per-tab parts (scroll position, find query) back into the tab before it
+// loads another tab here.
+
+// A run of diff text, emphasized when it changed relative to the paired line.
+export struct DiffSpan {
+    text: string,
+    emphasized: bool,
+}
+
+// One row of the diff viewer. `kind` mirrors `DiffRowKind` in
+// src/files/diff_view.rs.
+export struct DiffRowData {
+    kind: int,
+    file: int,
+    old-no: string,
+    new-no: string,
+    text: string,
+    // Non-empty only when part of the line is emphasized.
+    spans: [DiffSpan],
+    status: string,
+    added: int,
+    removed: int,
+    collapsed: bool,
+    can-open: bool,
+    first: bool,
+}
+
+// Highlight of one find match in the unwrapped text view. The view measures
+// `prefix` (the line up to the match) and `text` in the content font.
+export struct FindMark {
+    line: int,
+    prefix: string,
+    text: string,
+    current: bool,
+}
+
+export global FilesState {
+    // Id of the tab whose state is loaded here; -1 when none. Owned by Rust.
+    in-out property <int> tab-id: -1;
+    in property <bool> is-diff;
+    in property <string> title;
+    in property <string> path;
+    in property <string> details;
+
+    // ----- text viewer
+    // A text tab: in-memory text with no file (no reload, reveal, ...).
+    in property <bool> is-text;
+    in property <bool> loading;
+    in property <string> error;
+    in property <string> notice;
+    in property <bool> binary;
+    in property <string> binary-info;
+    // The file runs as a program when opened (executable bit or type).
+    in property <bool> executable;
+    in property <string> content;
+    // Visual lines in `content` (newlines + 1).
+    in property <int> visual-lines: 1;
+    // Lines that get a number in the gutter.
+    in property <int> line-count;
+    // "1\n2\n…": laid out like the content so numbers never drift.
+    in property <string> gutter-text;
+    in property <int> gutter-digits: 3;
+    in property <bool> truncated;
+    in property <string> truncated-info;
+    in property <bool> can-load-more;
+    in property <bool> wrap;
+    // Live scroll position of the shown view (two-way bound by the views).
+    in-out property <length> scroll-x;
+    in-out property <length> scroll-y;
+    // Position to restore once the view has laid out its content; a view
+    // that is (re)created can clamp `scroll-*` before its content exists.
+    in property <length> restore-x;
+    in property <length> restore-y;
+    in-out property <bool> restore-pending;
+    in property <string> cursor-label;
+    // Selection request (UTF-8 byte offsets). Applied when `sel-serial`
+    // changes, or when the text view is created while `sel-fresh` is set;
+    // the view clears `sel-fresh` once applied.
+    in property <int> sel-anchor;
+    in property <int> sel-focus;
+    in property <int> sel-serial;
+    in-out property <bool> sel-fresh;
+    // Find bar.
+    in property <bool> find-open;
+    in-out property <string> find-query;
+    in property <string> find-status;
+    in property <bool> find-no-match;
+    // Bumped to focus the find field again while it is open.
+    in property <int> find-focus-serial;
+    // Highlights of the matches near the visible lines (unwrapped view only).
+    in property <[FindMark]> find-marks;
+
+    // ----- diff viewer
+    in property <[DiffRowData]> diff-rows;
+    in property <string> diff-summary;
+    in property <string> diff-hint;
+    in property <int> diff-max-chars;
+    in property <int> diff-number-digits: 1;
+
+    callback toggle-wrap();
+    callback open-find();
+    callback find-edited(string);
+    callback find-next();
+    callback find-prev();
+    callback close-find();
+    callback go-to-line();
+    callback copy-path();
+    callback reveal();
+    callback open-externally();
+    callback reload();
+    callback load-more();
+    callback show-as-text();
+    // Cursor moved to this UTF-8 byte offset.
+    callback cursor-moved(int);
+    // Zero-based first and last visible line of the text view.
+    callback viewport-changed(int, int);
+    // Text tabs: copy the whole text, save it to a file.
+    callback copy-all();
+    callback save-text-as();
+
+    callback diff-toggle-file(int);
+    callback diff-set-collapsed(bool);
+    callback diff-open-file(int);
+    callback copy-diff();
+}

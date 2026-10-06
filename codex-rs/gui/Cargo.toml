@@ -1,0 +1,121 @@
+[package]
+name = "codex-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+autobins = false
+
+[[bin]]
+name = "codex-gui"
+path = "src/main.rs"
+
+[lib]
+name = "codex_gui"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+arboard = { workspace = true }
+base64 = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+codex-ansi-escape = { workspace = true }
+codex-app-server-client = { workspace = true }
+codex-app-server-protocol = { workspace = true }
+codex-arg0 = { workspace = true }
+codex-aws-auth = { workspace = true }
+codex-build-info = { workspace = true }
+codex-cloud-config = { workspace = true }
+codex-config = { workspace = true }
+codex-context-fragments = { workspace = true }
+codex-exec-server = { workspace = true }
+codex-feedback = { workspace = true }
+codex-file-search = { workspace = true }
+codex-lmstudio = { workspace = true }
+codex-git-utils = { workspace = true }
+codex-login = { workspace = true }
+codex-model-provider = { workspace = true }
+codex-ollama = { workspace = true }
+codex-otel = { workspace = true }
+codex-protocol = { workspace = true }
+codex-rollout = { workspace = true }
+codex-state = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
+codex-utils-cli = { workspace = true }
+codex-utils-home-dir = { workspace = true }
+codex-utils-path-uri = { workspace = true }
+codex-worktree = { workspace = true }
+dirs = { workspace = true }
+# `std::fs::canonicalize` without Windows `\\?\` verbatim prefixes.
+dunce = { workspace = true }
+futures = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
+notify-rust = { workspace = true }
+pulldown-cmark = { workspace = true }
+rfd = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+shlex = { workspace = true }
+similar = { workspace = true }
+slint = { workspace = true, features = [
+    "std",
+    "compat-1-18",
+    "backend-winit",
+    "renderer-femtovg",
+    "renderer-femtovg-wgpu",
+    "renderer-software",
+    "accessibility",
+    "raw-window-handle-06",
+    # File drops from the OS reach the app only as winit window events
+    # (`composer::drop`), and so do focus, theme, and (macOS) termination
+    # requests (`lib.rs`, `platform.rs`); the slint version is pinned exactly
+    # in the workspace.
+    "unstable-winit-030",
+    # Resolves fontconfig's `monospace` family on Linux (`app.rs`).
+    "unstable-fontique-011",
+] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true, features = ["log"] }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { workspace = true, features = ["v4", "v7"] }
+webbrowser = { workspace = true }
+
+# Slint's font discovery links fontconfig at build time unless it is loaded
+# with dlopen; dlopen keeps Linux builds free of system -dev packages.
+[target.'cfg(target_os = "linux")'.dependencies]
+i-slint-common = { version = "=1.18.1", features = ["fontconfig-dlopen"] }
+# Probes for OpenGL libraries before choosing the renderer (`platform.rs`).
+libc = { workspace = true }
+
+# Intercepts `terminate:` (Cmd+Q, Dock › Quit) on winit's app delegate.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+
+# Attaches to the parent console for `--help` and argument errors.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Console"] }
+
+[package.metadata.cargo-shear]
+# Only enabled for its `fontconfig-dlopen` feature (see above).
+ignored = ["i-slint-common"]
+
+[build-dependencies]
+slint-build = { workspace = true, features = ["compat-1-18"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

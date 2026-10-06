@@ -1,0 +1,283 @@
+// Cross-tab messaging UI: the modal "Send to tab…" dialog that forwards
+// text from one thread tab to another.
+//
+// OWNER: xtab feature (src/xtab/mod.rs).
+
+import { TextEdit, LineEdit, ListView } from "std-widgets.slint";
+import { Theme, FlatButton } from "theme.slint";
+
+// One thread tab the user can forward to.
+export struct XtabTarget {
+    title: string,
+    // Working folder, with the home directory abbreviated to "~".
+    folder: string,
+    // Short status label ("Idle", "Working", ...).
+    status: string,
+    // A turn is running or waiting on the user.
+    busy: bool,
+    // The thread exists on the server, so the message can be queued.
+    can-queue: bool,
+}
+
+export global XtabState {
+    in property <bool> dialog-open;
+    in property <string> source-title;
+    in property <[XtabTarget]> targets;
+    in-out property <int> selected-target: -1;
+    in-out property <string> message;
+    in-out property <string> note;
+    // Validation or delivery error shown above the buttons.
+    in property <string> error;
+
+    callback cancel();
+    // `queue`: add to the target's queue instead of sending now.
+    callback submit(/* queue */ bool);
+}
+
+component TargetRow inherits Rectangle {
+    in property <XtabTarget> target;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 44px;
+    background: selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-l;
+        spacing: Theme.pad-m;
+
+        // Radio indicator.
+        Rectangle {
+            width: 14px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 7px;
+            border-width: root.selected ? 4px : 1px;
+            border-color: root.selected ? Theme.accent : Theme.border-strong;
+            background: Theme.surface;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 1px;
+
+            Text {
+                text: root.target.title;
+                color: Theme.text;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.target.folder;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+            }
+        }
+
+        Text {
+            text: root.target.status;
+            color: root.target.busy ? Theme.accent : Theme.text-faint;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component FieldLabel inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-size-small;
+    font-weight: 600;
+}
+
+export component XtabOverlay inherits Rectangle {
+    visible: XtabState.dialog-open;
+
+    if XtabState.dialog-open: Rectangle {
+        background: #00000060;
+
+        // Modal: swallow clicks on the backdrop.
+        TouchArea { }
+
+        card := Rectangle {
+            property <bool> has-target: XtabState.selected-target >= 0 && XtabState.selected-target < XtabState.targets.length;
+            property <bool> can-queue: self.has-target && XtabState.targets[XtabState.selected-target].can-queue;
+
+            width: min(parent.width - 2 * Theme.pad-xl, 600px);
+            height: min(layout.preferred-height, parent.height - 2 * Theme.pad-xl);
+            x: (parent.width - self.width) / 2;
+            y: max(Theme.pad-xl, (parent.height - self.height) / 3);
+            background: Theme.surface;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+
+            TouchArea { }
+
+            FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        XtabState.cancel();
+                        return accept;
+                    }
+                    reject
+                }
+
+                layout := VerticalLayout {
+                    padding: Theme.pad-xl;
+                    spacing: Theme.pad-l;
+
+                    VerticalLayout {
+                        spacing: Theme.pad-xs;
+                        Text {
+                            text: "Send to another tab";
+                            color: Theme.text;
+                            font-size: Theme.font-size-large;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: "From “" + XtabState.source-title + "”";
+                            color: Theme.text-muted;
+                            overflow: elide;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: Theme.pad-s;
+                        FieldLabel {
+                            text: "To";
+                        }
+                        if XtabState.targets.length == 0: Rectangle {
+                            height: 56px;
+                            border-radius: Theme.radius-small;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            background: Theme.surface-alt;
+                            Text {
+                                x: Theme.pad-l;
+                                width: parent.width - 2 * Theme.pad-l;
+                                text: "No other thread tabs are open. Open a thread in another tab to forward to it.";
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if XtabState.targets.length > 0: Rectangle {
+                            min-height: 44px + 2px;
+                            preferred-height: min(XtabState.targets.length, 4) * 44px + 2px;
+                            max-height: min(XtabState.targets.length, 4) * 44px + 2px;
+                            vertical-stretch: 0.5;
+                            border-radius: Theme.radius-small;
+                            border-width: 1px;
+                            border-color: Theme.border;
+
+                            ListView {
+                                x: 1px;
+                                y: 1px;
+                                width: parent.width - 2px;
+                                height: parent.height - 2px;
+                                for target[index] in XtabState.targets: TargetRow {
+                                    target: target;
+                                    selected: index == XtabState.selected-target;
+                                    clicked => {
+                                        XtabState.selected-target = index;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: Theme.pad-s;
+                        vertical-stretch: 1;
+                        FieldLabel {
+                            text: "Message";
+                        }
+                        message-edit := TextEdit {
+                            text <=> XtabState.message;
+                            wrap: word-wrap;
+                            min-height: 72px;
+                            preferred-height: 168px;
+                            vertical-stretch: 1;
+                            font-size: Theme.font-size;
+                            placeholder-text: "Text to send";
+                            init => {
+                                self.focus();
+                            }
+                            key-pressed(event) => {
+                                if event.text == Key.Return && (event.modifiers.control || event.modifiers.meta) {
+                                    XtabState.submit(false);
+                                    return accept;
+                                }
+                                reject
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: Theme.pad-s;
+                        FieldLabel {
+                            text: "Note (optional)";
+                        }
+                        LineEdit {
+                            text <=> XtabState.note;
+                            font-size: Theme.font-size;
+                            placeholder-text: "Context for the receiving agent";
+                            accepted => {
+                                XtabState.submit(false);
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Send now delivers it as if you typed it in that tab. Queue waits until that tab is idle.";
+                        color: Theme.text-faint;
+                        font-size: Theme.font-size-small;
+                        wrap: word-wrap;
+                    }
+
+                    if XtabState.error != "": Text {
+                        text: XtabState.error;
+                        color: Theme.danger;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: Theme.pad-m;
+                        FlatButton {
+                            text: "Cancel";
+                            clicked => {
+                                XtabState.cancel();
+                            }
+                        }
+                        FlatButton {
+                            text: "Queue";
+                            enabled: card.can-queue;
+                            clicked => {
+                                XtabState.submit(true);
+                            }
+                        }
+                        FlatButton {
+                            text: "Send now";
+                            primary: true;
+                            enabled: card.has-target;
+                            clicked => {
+                                XtabState.submit(false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

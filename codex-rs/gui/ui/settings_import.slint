@@ -1,0 +1,143 @@
+// Settings › Import: bring settings, instructions, skills, MCP servers,
+// and recent chats over from other coding agents (Claude Code, Cursor)
+// through `externalAgentConfig/*`, then show per-type results and past
+// imports.
+//
+// OWNER: settings feature (src/settings/import.rs).
+
+import { ScrollView, ComboBox } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton } from "theme.slint";
+import { SettingsState } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, SectionTitle, ItemRowView } from "settings_widgets.slint";
+import { ServerDownBanner } from "settings_config.slint";
+
+export component ImportPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+    property <bool> can-import: SettingsState.server-ready && !SettingsState.import-running && !SettingsState.import-detecting;
+
+    VerticalLayout {
+        PageHeader {
+            title: "Import from other agents";
+            subtitle: "Bring your setup over from Claude Code or Cursor. Imported settings, instructions, and tools apply to new threads.";
+            side-padding: root.side;
+            FlatButton {
+                text: "Check again";
+                enabled: root.can-import;
+                clicked => {
+                    SettingsState.import-detect();
+                }
+            }
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            // Size the content to its preferred height; the default (min
+            // height) squeezes wrapped text.
+            content-height: content.preferred-height;
+            content := VerticalLayout {
+                alignment: start;
+                padding-left: root.side;
+                padding-right: root.side;
+                padding-bottom: Theme.pad-xl;
+                spacing: Theme.pad-m;
+
+                if SettingsState.import-run-status != "": Banner {
+                    tone: SettingsState.import-run-tone;
+                    text: SettingsState.import-run-status;
+                }
+                if SettingsState.import-results.length > 0: VerticalLayout {
+                    for item in SettingsState.import-results: ItemRowView {
+                        item: item;
+                        side-padding: 0px;
+                    }
+                }
+
+                if SettingsState.import-status != "": Text {
+                    text: SettingsState.import-status;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+
+                if SettingsState.import-sources.length > 1: HorizontalLayout {
+                    spacing: Theme.pad-l;
+                    Text {
+                        text: "Import from";
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: SettingsState.import-sources;
+                        current-index <=> SettingsState.import-source-index;
+                        enabled: !SettingsState.import-running;
+                        selected => {
+                            SettingsState.import-source-selected(self.current-index);
+                        }
+                    }
+                }
+
+                if SettingsState.import-total > 0: VerticalLayout {
+                    for item in SettingsState.import-items: ItemRowView {
+                        item: item;
+                        side-padding: 0px;
+                        toggled(on) => {
+                            SettingsState.import-toggle(item.id, on);
+                        }
+                    }
+                }
+
+                if SettingsState.import-total > 0: HorizontalLayout {
+                    spacing: Theme.pad-m;
+                    LinkButton {
+                        text: "Select all";
+                        enabled: !SettingsState.import-running;
+                        clicked => {
+                            SettingsState.import-select-all(true);
+                        }
+                    }
+                    LinkButton {
+                        text: "Select none";
+                        enabled: !SettingsState.import-running;
+                        clicked => {
+                            SettingsState.import-select-all(false);
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: SettingsState.import-selected + " of " + SettingsState.import-total + " selected";
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                    FlatButton {
+                        text: SettingsState.import-running ? "Importing…" : "Import selected";
+                        primary: root.can-import && SettingsState.import-selected > 0;
+                        enabled: root.can-import && SettingsState.import-selected > 0;
+                        clicked => {
+                            SettingsState.import-start();
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Past imports";
+                    subtitle: "Imports finished by this app, the CLI, or other Codex clients.";
+                }
+                if SettingsState.import-history.length == 0: Text {
+                    text: SettingsState.import-history-status != "" ? SettingsState.import-history-status : "Nothing has been imported yet.";
+                    color: Theme.text-faint;
+                    wrap: word-wrap;
+                }
+                VerticalLayout {
+                    for item in SettingsState.import-history: ItemRowView {
+                        item: item;
+                        side-padding: 0px;
+                    }
+                }
+            }
+        }
+    }
+}

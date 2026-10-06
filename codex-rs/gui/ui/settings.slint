@@ -1,0 +1,197 @@
+// Settings tab: a page list on the left and the selected page on the right.
+// Pages: Common, All settings, config.toml, Import, Account, Providers
+// (Bedrock), MCP servers, Skills, Plugins, Hooks, Features, Memories,
+// Appearance, Keyboard, Connection, Windows sandbox (Windows only),
+// Diagnostics, and Feedback.
+//
+// OWNER: settings feature (src/settings/). The Providers page is
+// `BedrockPage`, owned by the bedrock feature.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { BedrockPage } from "bedrock.slint";
+import { SettingsState, FieldData, ItemRow, KeyValue, ShortcutRow } from "settings_state.slint";
+import { CommonPage, AllSettingsPage, RawConfigPage } from "settings_config.slint";
+import { AccountPage } from "settings_account.slint";
+import { McpPage, SkillsPage, PluginsPage, HooksPage, FeaturesPage } from "settings_extensions.slint";
+import { AppearancePage, DiagnosticsPage } from "settings_app.slint";
+import { KeyboardPage } from "settings_keyboard.slint";
+import { ConnectionPage } from "settings_connection.slint";
+import { ImportPage } from "settings_import.slint";
+import { FeedbackPage } from "settings_feedback.slint";
+import { WindowsSandboxPage } from "settings_sandbox.slint";
+import { MemoriesPage } from "settings_memories.slint";
+
+export { SettingsState, FieldData, ItemRow, KeyValue, ShortcutRow }
+
+component NavCaption inherits Text {
+    color: Theme.text-faint;
+    font-size: Theme.font-size-small;
+    font-weight: 600;
+    height: 26px;
+    vertical-alignment: bottom;
+}
+
+component NavButton inherits Rectangle {
+    in property <string> id;
+    in property <string> title;
+    property <bool> selected: SettingsState.page == root.id;
+
+    height: 30px;
+    border-radius: Theme.radius-small;
+    background: selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+
+    Text {
+        x: Theme.pad-l;
+        width: parent.width - 2 * Theme.pad-l;
+        height: parent.height;
+        text: root.title;
+        color: root.selected ? Theme.text : Theme.text-muted;
+        font-weight: root.selected ? 600 : 400;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            SettingsState.open-page(root.id);
+        }
+    }
+}
+
+component SettingsNav inherits Rectangle {
+    background: Theme.surface-sunken;
+
+    ScrollView {
+        VerticalLayout {
+            padding: Theme.pad-m;
+            padding-top: Theme.pad-l;
+            spacing: 2px;
+            alignment: start;
+
+            NavCaption {
+                text: "Configuration";
+            }
+            NavButton {
+                id: "common";
+                title: "Common";
+            }
+            NavButton {
+                id: "all";
+                title: "All settings";
+            }
+            NavButton {
+                id: "raw";
+                title: "config.toml";
+            }
+            NavButton {
+                id: "import";
+                title: "Import";
+            }
+            NavCaption {
+                text: "Sign-in";
+            }
+            NavButton {
+                id: "account";
+                title: "Account";
+            }
+            NavButton {
+                id: "bedrock";
+                title: "Providers";
+            }
+            NavCaption {
+                text: "Extensions";
+            }
+            NavButton {
+                id: "mcp";
+                title: "MCP servers";
+            }
+            NavButton {
+                id: "skills";
+                title: "Skills";
+            }
+            NavButton {
+                id: "plugins";
+                title: "Plugins";
+            }
+            NavButton {
+                id: "hooks";
+                title: "Hooks";
+            }
+            NavButton {
+                id: "features";
+                title: "Features";
+            }
+            NavButton {
+                id: "memories";
+                title: "Memories";
+            }
+            NavCaption {
+                text: "App";
+            }
+            NavButton {
+                id: "appearance";
+                title: "Appearance";
+            }
+            NavButton {
+                id: "keyboard";
+                title: "Keyboard";
+            }
+            NavButton {
+                id: "connection";
+                title: "Connection";
+            }
+            if SettingsState.sandbox-visible: NavButton {
+                id: "windows-sandbox";
+                title: "Windows sandbox";
+            }
+            NavButton {
+                id: "diagnostics";
+                title: "Diagnostics";
+            }
+            NavCaption {
+                text: "Help";
+            }
+            NavButton {
+                id: "feedback";
+                title: "Send feedback";
+            }
+        }
+    }
+}
+
+export component SettingsView inherits Rectangle {
+    background: Theme.window-bg;
+
+    HorizontalLayout {
+        SettingsNav {
+            width: root.width < 760px ? 148px : 184px;
+        }
+        Rectangle {
+            width: 1px;
+            background: Theme.border;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+
+            if SettingsState.page == "common": CommonPage { }
+            if SettingsState.page == "all": AllSettingsPage { }
+            if SettingsState.page == "raw": RawConfigPage { }
+            if SettingsState.page == "account": AccountPage { }
+            if SettingsState.page == "bedrock": BedrockPage { }
+            if SettingsState.page == "mcp": McpPage { }
+            if SettingsState.page == "skills": SkillsPage { }
+            if SettingsState.page == "plugins": PluginsPage { }
+            if SettingsState.page == "hooks": HooksPage { }
+            if SettingsState.page == "features": FeaturesPage { }
+            if SettingsState.page == "memories": MemoriesPage { }
+            if SettingsState.page == "appearance": AppearancePage { }
+            if SettingsState.page == "diagnostics": DiagnosticsPage { }
+            if SettingsState.page == "import": ImportPage { }
+            if SettingsState.page == "keyboard": KeyboardPage { }
+            if SettingsState.page == "connection": ConnectionPage { }
+            if SettingsState.page == "windows-sandbox": WindowsSandboxPage { }
+            if SettingsState.page == "feedback": FeedbackPage { }
+        }
+    }
+}

@@ -1,0 +1,24 @@
+// File viewer and diff viewer tabs.
+//
+// OWNER: files feature (src/files/). The state global and row structs live in
+// files_state.slint; the views in files_viewer.slint and files_diff.slint.
+
+import { Theme } from "theme.slint";
+import { FilesState, DiffRowData, DiffSpan } from "files_state.slint";
+import { TextFileView } from "files_viewer.slint";
+import { DiffFileView } from "files_diff.slint";
+
+export { FilesState, DiffRowData, DiffSpan }
+
+export component FileView inherits Rectangle {
+    background: Theme.surface;
+
+    if !FilesState.is-diff: TextFileView {
+        width: parent.width;
+        height: parent.height;
+    }
+    if FilesState.is-diff: DiffFileView {
+        width: parent.width;
+        height: parent.height;
+    }
+}

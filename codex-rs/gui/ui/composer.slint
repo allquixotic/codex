@@ -1,0 +1,819 @@
+// Composer: message input with @ file mentions, the / command palette,
+// ! shell commands, image attachments and file drops, and the per-thread
+// model / effort / permissions / Plan toolbar.
+//
+// OWNER: composer feature (src/composer/).
+
+import { ScrollView, ListView } from "std-widgets.slint";
+import { Theme, FlatButton } from "theme.slint";
+
+// One attached image.
+export struct ComposerChip {
+    name: string,
+    detail: string,
+    path: string,
+    thumb: image,
+    has-thumb: bool,
+}
+
+// One row of the @ / / / $ popup.
+export struct ComposerSuggestion {
+    title: styled-text,
+    detail: string,
+    // "file" | "folder" | "command" | "skill"
+    kind: string,
+}
+
+// One entry of a toolbar picker.
+export struct ComposerChoice {
+    id: string,
+    label: string,
+    detail: string,
+    selected: bool,
+}
+
+export global ComposerState {
+    in-out property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> busy;
+    in property <bool> enter-sends: true;
+    in property <string> placeholder: "Ask Codex anything";
+    in property <string> send-label: "Send";
+
+    // Requests from Rust, applied whenever the serial changes.
+    in property <int> cursor-request;
+    in property <int> cursor-serial;
+    in property <int> focus-serial;
+    // The message input has keyboard focus. Approval cards only take focus
+    // from the composer or from nothing, never from another input.
+    in-out property <bool> input-focused;
+    in property <string> picker-request;
+    in property <int> picker-serial;
+
+    in property <[ComposerChip]> attachments;
+    in property <bool> images-allowed: true;
+    // Files from the OS are being dragged over the window.
+    in property <bool> drop-hover;
+
+    in property <bool> popup-open;
+    in property <string> popup-title;
+    in property <string> popup-hint;
+    in property <[ComposerSuggestion]> suggestions;
+    in-out property <int> selected-suggestion;
+
+    in property <string> model-label: "Model";
+    in property <[ComposerChoice]> models;
+    in property <string> effort-label;
+    in property <[ComposerChoice]> efforts;
+    in property <bool> effort-visible: true;
+    in property <string> permission-label;
+    in property <[ComposerChoice]> permissions;
+    in property <bool> plan-available;
+    in property <bool> plan-enabled: true;
+    in property <bool> plan-mode;
+    in property <string> context-label;
+
+    callback send();
+    callback interrupt();
+    callback input-changed(text: string, cursor: int);
+    callback accept-suggestion(row: int);
+    callback dismiss-suggestions();
+    // Returns true when the clipboard held an image that was attached.
+    callback paste-image() -> bool;
+    callback attach();
+    callback remove-attachment(row: int);
+    callback choose(picker: string, id: string);
+    callback toggle-plan();
+    // 1 = send, 0 = let the input insert a newline.
+    callback enter-action(enter-sends: bool, shift: bool, command: bool, meta: bool, alt: bool) -> int;
+}
+
+// Multi-line input. Like the std TextEdit, but exposes the cursor so Rust can
+// find the @ / $ token under it, and routes popup navigation keys.
+component ComposerInput inherits Rectangle {
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    out property <bool> has-focus: ti.has-focus;
+    property <length> line-height: Theme.font-size * 1.45;
+
+    min-height: root.line-height;
+    preferred-height: max(root.line-height, ti.preferred-height);
+    max-height: 220px;
+    forward-focus: ti;
+
+    public function focus-input() {
+        ti.focus();
+    }
+
+    public function set-cursor(offset: int) {
+        ti.set-selection-offsets(offset, offset);
+    }
+
+    function report() {
+        ComposerState.input-changed(ti.text, ti.cursor-position-byte-offset);
+    }
+
+    init => {
+        if root.enabled {
+            ti.focus();
+        }
+        root.report();
+    }
+
+    ContextMenuArea {
+        enabled: root.enabled;
+        Menu {
+            MenuItem {
+                title: "Cut";
+                enabled: root.enabled;
+                activated => {
+                    ti.cut();
+                }
+            }
+            MenuItem {
+                title: "Copy";
+                activated => {
+                    ti.copy();
+                }
+            }
+            MenuItem {
+                title: "Paste";
+                enabled: root.enabled;
+                activated => {
+                    if !ComposerState.paste-image() {
+                        ti.paste();
+                    }
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Select All";
+                activated => {
+                    ti.select-all();
+                }
+            }
+        }
+
+        sv := ScrollView {
+            width: 100%;
+            height: 100%;
+            content-width: self.visible-width;
+            content-height: max(self.visible-height, ti.preferred-height);
+
+            ti := TextInput {
+                text <=> ComposerState.text;
+                enabled: root.enabled;
+                single-line: false;
+                wrap: word-wrap;
+                color: root.enabled ? Theme.text : Theme.text-faint;
+                font-size: Theme.font-size;
+                selection-background-color: Theme.accent-soft;
+                selection-foreground-color: Theme.text;
+                page-height: sv.visible-height;
+                accessible-placeholder-text: root.placeholder;
+
+                edited => {
+                    root.report();
+                }
+
+                cursor-position-changed(position) => {
+                    if position.y + sv.content-y < 0px {
+                        sv.content-y = min(0px, max(sv.visible-height - self.height, -position.y));
+                    } else if position.y + sv.content-y > sv.visible-height - root.line-height {
+                        sv.content-y = min(0px, max(sv.visible-height - self.height, sv.visible-height - position.y - root.line-height));
+                    }
+                    root.report();
+                }
+
+                key-pressed(event) => {
+                    if ComposerState.popup-open {
+                        if event.text == Key.Escape {
+                            ComposerState.dismiss-suggestions();
+                            return accept;
+                        }
+                        if ComposerState.suggestions.length > 0 && !event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+                            if event.text == Key.UpArrow {
+                                ComposerState.selected-suggestion = ComposerState.selected-suggestion <= 0 ? ComposerState.suggestions.length - 1 : ComposerState.selected-suggestion - 1;
+                                return accept;
+                            }
+                            if event.text == Key.DownArrow {
+                                ComposerState.selected-suggestion = ComposerState.selected-suggestion >= ComposerState.suggestions.length - 1 ? 0 : ComposerState.selected-suggestion + 1;
+                                return accept;
+                            }
+                            if event.text == Key.Return || event.text == Key.Tab {
+                                ComposerState.accept-suggestion(ComposerState.selected-suggestion);
+                                return accept;
+                            }
+                        }
+                    }
+                    if event.text == Key.Return && self.preedit-text == "" {
+                        if ComposerState.enter-action(ComposerState.enter-sends, event.modifiers.shift, event.modifiers.control, event.modifiers.meta, event.modifiers.alt) == 1 {
+                            ComposerState.send();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                    if event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && (event.text == "v" || event.text == "V") {
+                        if ComposerState.paste-image() {
+                            return accept;
+                        }
+                    }
+                    reject
+                }
+            }
+        }
+    }
+
+    if ComposerState.text == "" && ti.preedit-text == "": Text {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        text: root.placeholder;
+        color: Theme.text-faint;
+        font-size: Theme.font-size;
+        vertical-alignment: top;
+        overflow: elide;
+        accessible-role: none;
+    }
+}
+
+// Row of a toolbar picker popup.
+component ChoiceRow inherits Rectangle {
+    in property <ComposerChoice> choice;
+    callback clicked();
+
+    height: root.choice.detail == "" ? 30px : 46px;
+    border-radius: Theme.radius-small;
+    background: touch.has-hover ? Theme.hover : root.choice.selected ? Theme.accent-soft : transparent;
+
+    HorizontalLayout {
+        padding-left: Theme.pad-m;
+        padding-right: Theme.pad-m;
+        spacing: Theme.pad-m;
+
+        Rectangle {
+            width: 14px;
+            Text {
+                text: root.choice.selected ? "✓" : "";
+                color: Theme.accent;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            Text {
+                text: root.choice.label;
+                color: Theme.text;
+                font-weight: root.choice.selected ? 600 : 400;
+                overflow: elide;
+            }
+            if root.choice.detail != "": Text {
+                text: root.choice.detail;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Flat dropdown button whose list opens above it.
+component Picker inherits Rectangle {
+    in property <string> name;
+    in property <string> label;
+    in property <string> heading;
+    in property <[ComposerChoice]> choices;
+    in property <bool> enabled: true;
+    in property <length> popup-width: 320px;
+    // Narrowest the button may get; labels elide below their natural width.
+    in property <length> shrink-to: 40px;
+    property <bool> active: root.enabled && root.choices.length > 0;
+    property <length> row-height: 46px;
+    property <int> open-serial: ComposerState.picker-serial;
+
+    changed open-serial => {
+        if ComposerState.picker-request == root.name && root.active {
+            popup.show();
+        } else {
+            popup.close();
+        }
+    }
+
+    height: 26px;
+    min-width: min(root.shrink-to, content.preferred-width);
+    preferred-width: content.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius-small;
+    background: touch.has-hover && root.active ? Theme.hover : transparent;
+
+    content := HorizontalLayout {
+        padding-left: Theme.pad-m;
+        padding-right: Theme.pad-s;
+        spacing: Theme.pad-xs;
+
+        Text {
+            text: root.label;
+            color: root.enabled ? Theme.text-muted : Theme.text-faint;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.active ? "▾" : "";
+            color: Theme.text-faint;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: pointer;
+        clicked => {
+            popup.show();
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0px;
+        y: -self.height - 6px;
+        width: root.popup-width;
+        height: min(root.choices.length * root.row-height, 360px) + 30px + 2 * Theme.pad-s;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+
+        Rectangle {
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            border-radius: Theme.radius;
+
+            VerticalLayout {
+                padding: Theme.pad-s;
+                spacing: 0px;
+
+                HorizontalLayout {
+                    height: 30px;
+                    padding-left: Theme.pad-m;
+                    Text {
+                        text: root.heading;
+                        color: Theme.text-faint;
+                        font-size: Theme.font-size-small;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+
+                ListView {
+                    for choice in root.choices: ChoiceRow {
+                        choice: choice;
+                        height: root.row-height;
+                        clicked => {
+                            ComposerState.choose(root.name, choice.id);
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Small pill toggled on for Plan mode.
+component PlanToggle inherits Rectangle {
+    in property <bool> on;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    height: 24px;
+    width: label.preferred-width + 2 * Theme.pad-m;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.on ? Theme.accent : Theme.border;
+    background: root.on ? Theme.accent-soft : touch.has-hover && root.enabled ? Theme.hover : transparent;
+
+    label := Text {
+        text: "Plan";
+        color: !root.enabled ? Theme.text-faint : root.on ? Theme.accent : Theme.text-muted;
+        font-size: Theme.font-size-small;
+        font-weight: root.on ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+// Image chip above the input.
+component AttachmentChip inherits Rectangle {
+    in property <ComposerChip> chip;
+    callback remove();
+
+    height: 40px;
+    width: min(layout.preferred-width, 240px);
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.surface-alt;
+
+    layout := HorizontalLayout {
+        padding: 5px;
+        padding-right: 2px;
+        spacing: Theme.pad-m;
+
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            background: Theme.surface-sunken;
+            if root.chip.has-thumb: Image {
+                width: 28px;
+                height: 28px;
+                source: root.chip.thumb;
+                image-fit: cover;
+            }
+            if !root.chip.has-thumb: Text {
+                text: "IMG";
+                color: Theme.text-faint;
+                font-size: 9px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.chip.name;
+                color: Theme.text;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+                max-width: 150px;
+            }
+            if root.chip.detail != "": Text {
+                text: root.chip.detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small - 1px;
+            }
+        }
+
+        Rectangle {
+            width: 22px;
+            border-radius: Theme.radius-small;
+            background: remove-touch.has-hover ? Theme.hover : transparent;
+            Text {
+                text: "×";
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            remove-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.remove();
+                }
+            }
+        }
+    }
+}
+
+component SuggestionRow inherits Rectangle {
+    in property <ComposerSuggestion> item;
+    in property <bool> selected;
+    callback clicked();
+    callback hovered();
+
+    border-radius: Theme.radius-small;
+    background: root.selected ? Theme.selected : transparent;
+
+    property <bool> has-detail: root.item.detail != "";
+    property <length> title-width: root.item.kind == "command" || root.item.kind == "skill"
+        ? min(160px, (root.width - 2 * Theme.pad-m) * 0.4)
+        : root.has-detail ? (root.width - 2 * Theme.pad-m) * 0.6 : root.width - 2 * Theme.pad-m;
+
+    StyledText {
+        x: Theme.pad-m;
+        width: root.title-width;
+        height: root.height;
+        text: root.item.title;
+        default-color: Theme.text;
+        default-font-size: Theme.font-size;
+        link-color: Theme.accent;
+        vertical-alignment: center;
+        max-lines: 1;
+    }
+    if root.has-detail: Text {
+        x: Theme.pad-m + root.title-width + Theme.pad-l;
+        width: max(0px, root.width - self.x - Theme.pad-m);
+        height: root.height;
+        text: root.item.detail;
+        color: Theme.text-muted;
+        font-size: Theme.font-size-small;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+        moved => {
+            if !root.selected {
+                root.hovered();
+            }
+        }
+    }
+}
+
+// Popup listing completions; anchored above the composer card by the parent.
+component SuggestionPopup inherits Rectangle {
+    property <length> row-height: 28px;
+    property <int> visible-rows: min(ComposerState.suggestions.length, 8);
+
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    border-radius: Theme.radius;
+    height: layout.preferred-height;
+
+    // Swallow clicks on the frame so they do not reach the transcript.
+    TouchArea { }
+
+    layout := VerticalLayout {
+        padding: Theme.pad-s;
+        spacing: Theme.pad-xs;
+
+        HorizontalLayout {
+            height: 22px;
+            padding-left: Theme.pad-m;
+            padding-right: Theme.pad-m;
+            Text {
+                text: ComposerState.popup-title;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            if root.width > 460px: Text {
+                text: ComposerState.suggestions.length > 0 ? "↑↓ to move · Enter to choose · Esc to close" : "Esc to close";
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        if ComposerState.suggestions.length == 0: HorizontalLayout {
+            height: root.row-height;
+            padding-left: Theme.pad-m;
+            padding-right: Theme.pad-m;
+            Text {
+                text: ComposerState.popup-hint;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        if ComposerState.suggestions.length > 0: list := ListView {
+            property <int> selected: ComposerState.selected-suggestion;
+            height: root.visible-rows * root.row-height;
+            horizontal-scrollbar-policy: always-off;
+
+            changed selected => {
+                if self.selected * root.row-height + self.content-y < 0px {
+                    self.content-y = -self.selected * root.row-height;
+                } else if (self.selected + 1) * root.row-height + self.content-y > self.visible-height {
+                    self.content-y = self.visible-height - (self.selected + 1) * root.row-height;
+                }
+            }
+
+            for item[index] in ComposerState.suggestions: SuggestionRow {
+                height: root.row-height;
+                item: item;
+                selected: index == ComposerState.selected-suggestion;
+                clicked => {
+                    ComposerState.accept-suggestion(index);
+                }
+                hovered => {
+                    ComposerState.selected-suggestion = index;
+                }
+            }
+        }
+    }
+}
+
+export component ComposerView inherits Rectangle {
+    property <bool> narrow: root.width < 560px;
+    property <length> side-padding: root.narrow ? Theme.pad-m : Theme.pad-xl;
+    property <int> cursor-serial: ComposerState.cursor-serial;
+    property <int> focus-serial: ComposerState.focus-serial;
+
+    changed cursor-serial => {
+        input.set-cursor(ComposerState.cursor-request);
+    }
+    changed focus-serial => {
+        if ComposerState.enabled {
+            input.focus-input();
+        }
+    }
+
+    background: Theme.window-bg;
+    vertical-stretch: 0;
+
+    VerticalLayout {
+        padding-left: root.side-padding;
+        padding-right: root.side-padding;
+        padding-top: Theme.pad-s;
+        padding-bottom: root.narrow ? Theme.pad-m : Theme.pad-l;
+
+        card := Rectangle {
+            background: Theme.surface;
+            border-width: ComposerState.drop-hover ? 2px : 1px;
+            border-color: input.has-focus || ComposerState.drop-hover ? Theme.accent : Theme.border-strong;
+            border-radius: Theme.radius + 2px;
+
+            VerticalLayout {
+                padding-left: Theme.pad-l;
+                padding-right: Theme.pad-s;
+                padding-top: Theme.pad-m;
+                padding-bottom: Theme.pad-s;
+                spacing: Theme.pad-m;
+
+                if ComposerState.attachments.length > 0: Rectangle {
+                    height: 40px;
+                    clip: true;
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: Theme.pad-s;
+                        for chip[index] in ComposerState.attachments: AttachmentChip {
+                            chip: chip;
+                            remove => {
+                                ComposerState.remove-attachment(index);
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-right: Theme.pad-s;
+                    input := ComposerInput {
+                        placeholder: ComposerState.placeholder;
+                        enabled: ComposerState.enabled;
+                        init => {
+                            ComposerState.input-focused = self.has-focus;
+                        }
+                        changed has-focus => {
+                            ComposerState.input-focused = self.has-focus;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.pad-xs;
+                    alignment: stretch;
+
+                    Picker {
+                        name: "model";
+                        heading: "Model";
+                        label: ComposerState.model-label;
+                        choices: ComposerState.models;
+                        enabled: ComposerState.enabled;
+                        popup-width: 340px;
+                        max-width: root.narrow ? 140px : 220px;
+                        shrink-to: 56px;
+                    }
+                    if ComposerState.effort-visible: Picker {
+                        name: "effort";
+                        heading: "Reasoning effort";
+                        label: ComposerState.effort-label;
+                        choices: ComposerState.efforts;
+                        enabled: ComposerState.enabled;
+                        popup-width: 300px;
+                        max-width: 140px;
+                        shrink-to: 110px;
+                    }
+                    Picker {
+                        name: "permissions";
+                        heading: "Permissions";
+                        label: ComposerState.permission-label;
+                        choices: ComposerState.permissions;
+                        enabled: ComposerState.enabled;
+                        popup-width: 460px;
+                        max-width: 140px;
+                        shrink-to: 110px;
+                    }
+                    if ComposerState.plan-available: Rectangle {
+                        width: plan.width + Theme.pad-s;
+                        plan := PlanToggle {
+                            x: Theme.pad-s;
+                            y: (parent.height - self.height) / 2;
+                            on: ComposerState.plan-mode;
+                            enabled: ComposerState.plan-enabled;
+                            toggled => {
+                                ComposerState.toggle-plan();
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    if !root.narrow && ComposerState.context-label != "": Text {
+                        text: ComposerState.context-label;
+                        color: Theme.text-faint;
+                        font-size: Theme.font-size-small;
+                        vertical-alignment: center;
+                    }
+                    if !root.narrow && ComposerState.context-label != "": Rectangle {
+                        width: Theme.pad-m;
+                    }
+
+                    attach := Rectangle {
+                        width: 28px;
+                        height: 26px;
+                        border-radius: Theme.radius-small;
+                        background: attach-touch.has-hover && ComposerState.enabled ? Theme.hover : transparent;
+                        Text {
+                            text: "+";
+                            color: ComposerState.enabled && ComposerState.images-allowed ? Theme.text-muted : Theme.text-faint;
+                            font-size: Theme.font-size-large;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        attach-touch := TouchArea {
+                            enabled: ComposerState.enabled;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                ComposerState.attach();
+                            }
+                        }
+                    }
+
+                    if ComposerState.busy: FlatButton {
+                        text: "Stop";
+                        danger: true;
+                        clicked => {
+                            ComposerState.interrupt();
+                        }
+                    }
+                    FlatButton {
+                        text: ComposerState.send-label;
+                        primary: true;
+                        enabled: ComposerState.enabled && (ComposerState.text != "" || ComposerState.attachments.length > 0);
+                        clicked => {
+                            ComposerState.send();
+                        }
+                    }
+                }
+            }
+
+            if ComposerState.drop-hover: Rectangle {
+                x: 2px;
+                y: 2px;
+                width: parent.width - 4px;
+                height: parent.height - 4px;
+                border-radius: Theme.radius;
+                background: Theme.surface.with-alpha(0.94);
+
+                Text {
+                    text: ComposerState.images-allowed
+                        ? "Drop to attach images or insert file paths"
+                        : "Drop to insert file paths";
+                    color: Theme.accent;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    if ComposerState.popup-open: SuggestionPopup {
+        x: root.side-padding;
+        // Bottom edge 6px above the card.
+        y: -self.height - 2px;
+        width: min(root.width - 2 * root.side-padding, 640px);
+    }
+}

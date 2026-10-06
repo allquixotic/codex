@@ -1,0 +1,261 @@
+// Settings › Connection: where this app's Codex server runs (embedded,
+// local daemon, or remote app-server), with validation and a connection
+// test. Saved to gui.json; takes effect the next time Codex starts.
+//
+// OWNER: settings feature (src/settings/connection.rs).
+
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme, FlatButton } from "theme.slint";
+import { SettingsState } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, Card, SectionTitle, KeyValueList, ToneBadge } from "settings_widgets.slint";
+
+// One of the three connection kinds, selectable like a radio button.
+component ModeOption inherits Rectangle {
+    in property <int> mode;
+    in property <string> title;
+    in property <string> description;
+    property <bool> selected: SettingsState.connection-mode == root.mode;
+
+    background: root.selected ? Theme.accent-soft : touch.has-hover ? Theme.hover : Theme.surface;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : Theme.border;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            if !root.selected {
+                SettingsState.connection-mode = root.mode;
+                SettingsState.connection-edited();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding: Theme.pad-l;
+        spacing: Theme.pad-l;
+        // Radio mark drawn with rectangles so it renders on every renderer.
+        VerticalLayout {
+            alignment: start;
+            padding-top: 2px;
+            Rectangle {
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border-width: root.selected ? 4px : 1px;
+                border-color: root.selected ? Theme.accent : Theme.border-strong;
+                background: Theme.surface;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.description;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+component FormLine inherits HorizontalLayout {
+    in property <string> label;
+    in property <length> label-width: 150px;
+    spacing: Theme.pad-l;
+    Text {
+        text: root.label;
+        color: Theme.text-muted;
+        width: root.label-width;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+    @children
+}
+
+export component ConnectionPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+    property <length> label-width: 130px;
+
+    VerticalLayout {
+        PageHeader {
+            title: "Connection";
+            subtitle: "Where the Codex server behind this window runs. Threads, history, and settings live with that server.";
+            side-padding: root.side;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            // Size the content to its preferred height; the default (min
+            // height) squeezes wrapped text and text inputs.
+            content-height: content.preferred-height;
+            content := VerticalLayout {
+                alignment: start;
+                padding-left: root.side;
+                padding-right: root.side;
+                padding-bottom: Theme.pad-xl;
+                spacing: Theme.pad-m;
+
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-s;
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            Text {
+                                text: "Connected to";
+                                color: Theme.text-muted;
+                                vertical-alignment: center;
+                            }
+                            ToneBadge {
+                                text: SettingsState.connection-state;
+                                tone: SettingsState.server-ready ? 1 : SettingsState.server-error != "" ? 3 : 0;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        TextInput {
+                            text: SettingsState.connection-current;
+                            read-only: true;
+                            single-line: false;
+                            wrap: word-wrap;
+                            color: Theme.text;
+                            font-size: Theme.font-size-large;
+                            font-weight: 600;
+                        }
+                        if SettingsState.connection-saved != "": Text {
+                            text: SettingsState.connection-saved;
+                            color: Theme.accent;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Server";
+                    subtitle: "Embedded is the default and opens no network port. The other choices are opt-in.";
+                }
+                ModeOption {
+                    mode: 0;
+                    title: "Embedded (default)";
+                    description: "Codex runs inside this app. Nothing listens on a socket or port, and quitting the app stops every thread.";
+                }
+                ModeOption {
+                    mode: 1;
+                    title: "Local daemon";
+                    description: "Connect to the Codex daemon on this computer over a Unix socket (unix://). Threads are shared with the codex CLI and TUI and keep running after this window closes.";
+                }
+                ModeOption {
+                    mode: 2;
+                    title: "Remote app-server";
+                    description: "Drive Codex on another machine, for example across a tailnet, over WebSocket (ws://host:port or wss://host:port). Commands and file edits run on that machine.";
+                }
+
+                if SettingsState.connection-mode != 0: Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        FormLine {
+                            label: SettingsState.connection-mode == 1 ? "Socket" : "Address";
+                            label-width: root.label-width;
+                            LineEdit {
+                                horizontal-stretch: 1;
+                                placeholder-text: SettingsState.connection-mode == 1 ? "Default socket in your Codex home" : "wss://host:4500";
+                                text <=> SettingsState.connection-address;
+                                edited => {
+                                    SettingsState.connection-edited();
+                                }
+                            }
+                        }
+                        if SettingsState.connection-mode == 1: Text {
+                            text: "Leave empty for the daemon that the codex CLI starts, or enter the path of another socket.";
+                            color: Theme.text-faint;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                        if SettingsState.connection-mode == 2: FormLine {
+                            label: "Auth token variable";
+                            label-width: root.label-width;
+                            LineEdit {
+                                horizontal-stretch: 1;
+                                placeholder-text: "Optional, e.g. CODEX_REMOTE_TOKEN";
+                                text <=> SettingsState.connection-token-env;
+                                edited => {
+                                    SettingsState.connection-edited();
+                                }
+                            }
+                        }
+                        if SettingsState.connection-mode == 2: Text {
+                            text: "Name of an environment variable that holds the server's auth token. Tokens are only sent over wss:// or to this computer.";
+                            color: Theme.text-faint;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                if SettingsState.connection-check != "": Text {
+                    text: SettingsState.connection-check;
+                    color: SettingsState.connection-valid ? Theme.text-muted : Theme.danger;
+                    font-size: Theme.font-size-small;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.pad-m;
+                    alignment: end;
+                    if SettingsState.connection-testing: Text {
+                        text: "Connecting…";
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                    FlatButton {
+                        text: "Revert";
+                        enabled: SettingsState.connection-dirty;
+                        clicked => {
+                            SettingsState.connection-revert();
+                        }
+                    }
+                    FlatButton {
+                        text: "Test connection";
+                        enabled: SettingsState.connection-mode != 0 && SettingsState.connection-valid && !SettingsState.connection-testing;
+                        clicked => {
+                            SettingsState.connection-test();
+                        }
+                    }
+                    FlatButton {
+                        text: "Save";
+                        primary: SettingsState.connection-dirty && SettingsState.connection-valid;
+                        enabled: SettingsState.connection-dirty && SettingsState.connection-valid;
+                        clicked => {
+                            SettingsState.connection-save();
+                        }
+                    }
+                }
+
+                if SettingsState.connection-result != "": Banner {
+                    tone: SettingsState.connection-result-tone;
+                    text: SettingsState.connection-result;
+                }
+                if SettingsState.connection-facts.length > 0: Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        KeyValueList {
+                            items: SettingsState.connection-facts;
+                            key-width: 160px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

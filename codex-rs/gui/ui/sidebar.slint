@@ -1,0 +1,343 @@
+// Sidebar: thread list grouped by folder, server-side search, archived view.
+//
+// Rust (src/sidebar.rs) flattens folders and threads into `SidebarState.rows`
+// and keeps the open-tab status dots up to date.
+
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton } from "theme.slint";
+
+// Mirrored by `RowSpec` in src/sidebar.rs.
+export enum SidebarRowKind { folder, thread, more }
+
+// Status of a thread that is open in a tab (`not-open` otherwise).
+export enum SidebarThreadStatus { not-open, idle, starting, running, waiting, error }
+
+export struct SidebarRow {
+    kind: SidebarRowKind,
+    // Thread id (thread rows) or folder path (folder rows).
+    id: string,
+    title: string,
+    // Folder rows: full path. Thread rows: relative update time.
+    detail: string,
+    // Folder of the thread, or the folder itself.
+    folder: string,
+    // Folder rows: number of loaded threads.
+    count: int,
+    collapsed: bool,
+    status: SidebarThreadStatus,
+    selected: bool,
+}
+
+export global SidebarState {
+    in property <[SidebarRow]> rows;
+    // First page of a (re)load in flight.
+    in property <bool> loading;
+    in property <bool> loading-more;
+    in property <bool> has-more;
+    in property <string> error;
+    in property <string> empty-text: "No threads yet";
+    in property <bool> archived;
+    in-out property <string> search-text;
+    // Set by Rust to move keyboard focus into the search box.
+    in-out property <bool> focus-search-requested;
+
+    callback search-edited(text: string);
+    callback toggle-archived();
+    callback refresh();
+    callback load-more();
+    callback open-thread(id: string, folder: string);
+    callback thread-action(id: string, action: string);
+    callback folder-action(path: string, action: string);
+}
+
+component StatusDot inherits Rectangle {
+    in property <SidebarThreadStatus> status;
+
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: status == SidebarThreadStatus.running ? Theme.accent
+        : status == SidebarThreadStatus.waiting ? Theme.warning
+        : status == SidebarThreadStatus.error ? Theme.danger
+        : status == SidebarThreadStatus.starting ? Theme.text-faint
+        : transparent;
+    border-width: status == SidebarThreadStatus.idle ? 1px : 0px;
+    border-color: Theme.text-muted;
+}
+
+component FolderRowView inherits Rectangle {
+    in property <SidebarRow> item;
+
+    height: 30px;
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "New thread in this folder";
+                activated => { SidebarState.folder-action(item.folder, "new-thread"); }
+            }
+            MenuItem {
+                title: "Open folder";
+                activated => { SidebarState.folder-action(item.folder, "open-folder"); }
+            }
+            MenuItem {
+                title: "Copy path";
+                activated => { SidebarState.folder-action(item.folder, "copy-path"); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: item.collapsed ? "Expand" : "Collapse";
+                activated => { SidebarState.folder-action(item.folder, "toggle"); }
+            }
+        }
+
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { SidebarState.folder-action(item.folder, "toggle"); }
+        }
+    }
+
+    Rectangle {
+        x: Theme.pad-s;
+        width: parent.width - 2 * Theme.pad-s;
+        border-radius: Theme.radius-small;
+        background: touch.has-hover ? Theme.hover : transparent;
+
+        HorizontalLayout {
+            padding-left: Theme.pad-s;
+            padding-right: Theme.pad-m;
+            spacing: Theme.pad-s;
+
+            Text {
+                text: item.collapsed ? "▸" : "▾";
+                width: 12px;
+                color: Theme.text-faint;
+                vertical-alignment: center;
+            }
+            Text {
+                text: item.title;
+                color: Theme.text;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: item.count;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    Tooltip {
+        text: @markdown("\{item.detail}");
+    }
+}
+
+component ThreadRowView inherits Rectangle {
+    in property <SidebarRow> item;
+
+    height: 28px;
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Open";
+                activated => { SidebarState.thread-action(item.id, "open"); }
+            }
+            MenuItem {
+                title: "New thread in this folder";
+                activated => { SidebarState.thread-action(item.id, "new-thread"); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Rename…";
+                activated => { SidebarState.thread-action(item.id, "rename"); }
+            }
+            MenuItem {
+                title: SidebarState.archived ? "Unarchive" : "Archive";
+                activated => { SidebarState.thread-action(item.id, SidebarState.archived ? "unarchive" : "archive"); }
+            }
+            MenuItem {
+                title: "Delete…";
+                activated => { SidebarState.thread-action(item.id, "delete"); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Copy thread id";
+                activated => { SidebarState.thread-action(item.id, "copy-id"); }
+            }
+        }
+
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { SidebarState.open-thread(item.id, item.folder); }
+        }
+    }
+
+    Rectangle {
+        x: Theme.pad-s;
+        width: parent.width - 2 * Theme.pad-s;
+        border-radius: Theme.radius-small;
+        background: item.selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+
+        HorizontalLayout {
+            padding-left: 22px;
+            padding-right: Theme.pad-m;
+            spacing: Theme.pad-m;
+
+            StatusDot {
+                status: item.status;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: item.title;
+                color: item.selected ? Theme.text : Theme.text-muted;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: item.detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    Tooltip {
+        text: @markdown("\{item.title}");
+    }
+}
+
+component MoreRowView inherits Rectangle {
+    height: 32px;
+
+    touch := TouchArea {
+        enabled: !SidebarState.loading-more;
+        mouse-cursor: self.enabled ? pointer : default;
+        clicked => { SidebarState.load-more(); }
+    }
+
+    Text {
+        text: SidebarState.loading-more ? "Loading…" : "Load more threads";
+        color: touch.has-hover ? Theme.accent : Theme.text-faint;
+        font-size: Theme.font-size-small;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    background: Theme.surface-alt;
+
+    property <bool> want-search-focus: SidebarState.focus-search-requested;
+    changed want-search-focus => {
+        if want-search-focus {
+            search.focus();
+            SidebarState.focus-search-requested = false;
+        }
+    }
+    init => {
+        if SidebarState.focus-search-requested {
+            search.focus();
+            SidebarState.focus-search-requested = false;
+        }
+    }
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding-left: Theme.pad-l;
+            padding-right: Theme.pad-s;
+            padding-top: Theme.pad-m;
+            spacing: Theme.pad-xs;
+            height: 40px;
+
+            Text {
+                text: SidebarState.archived ? "Archived threads" : "Threads";
+                color: Theme.text;
+                font-size: Theme.font-size-large;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            LinkButton {
+                text: SidebarState.archived ? "Show active" : "Archived";
+                text-color: Theme.text-muted;
+                clicked => { SidebarState.toggle-archived(); }
+            }
+            LinkButton {
+                text: "↻";
+                width: 26px;
+                text-color: Theme.text-muted;
+                enabled: !SidebarState.loading;
+                clicked => { SidebarState.refresh(); }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Theme.pad-m;
+            padding-right: Theme.pad-m;
+            padding-top: Theme.pad-xs;
+            padding-bottom: Theme.pad-m;
+
+            search := LineEdit {
+                text <=> SidebarState.search-text;
+                placeholder-text: "Search threads";
+                edited(text) => { SidebarState.search-edited(text); }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+
+            list := ListView {
+                for row in SidebarState.rows: Rectangle {
+                    height: row.kind == SidebarRowKind.folder ? 30px
+                        : row.kind == SidebarRowKind.thread ? 28px
+                        : 32px;
+                    if row.kind == SidebarRowKind.folder: FolderRowView {
+                        item: row;
+                    }
+                    if row.kind == SidebarRowKind.thread: ThreadRowView {
+                        item: row;
+                    }
+                    if row.kind == SidebarRowKind.more: MoreRowView { }
+                }
+
+                changed content-y => {
+                    if SidebarState.has-more && !SidebarState.loading-more
+                        && -self.content-y + self.visible-height >= self.content-height - 120px {
+                        SidebarState.load-more();
+                    }
+                }
+            }
+
+            if SidebarState.rows.length == 0: VerticalLayout {
+                alignment: center;
+                padding: Theme.pad-xl;
+                spacing: Theme.pad-m;
+
+                Text {
+                    text: SidebarState.loading ? "Loading threads…"
+                        : SidebarState.error != "" ? SidebarState.error
+                        : SidebarState.empty-text;
+                    color: SidebarState.error != "" && !SidebarState.loading ? Theme.danger : Theme.text-faint;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+                if SidebarState.error != "" && !SidebarState.loading: HorizontalLayout {
+                    alignment: center;
+                    LinkButton {
+                        text: "Retry";
+                        clicked => { SidebarState.refresh(); }
+                    }
+                }
+            }
+        }
+    }
+}

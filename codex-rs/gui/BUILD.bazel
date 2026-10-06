@@ -1,0 +1,16 @@
+load("//:defs.bzl", "codex_rust_crate")
+
+codex_rust_crate(
+    name = "gui",
+    binaries_with_build_commit = ["codex-gui"],
+    # slint-build compiles ui/app.slint (and everything it imports) in build.rs.
+    build_script_data = glob(["ui/**"]),
+    # `include_bytes!` inputs of the library: the new-tab prompt and the app
+    # icon (`src/app.rs`). The .slint files embed no images, so nothing
+    # refers to the build script's sandbox paths.
+    compile_data = glob([
+        "assets/**",
+        "ui/assets/**",
+    ]),
+    crate_name = "codex_gui",
+)

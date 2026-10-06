@@ -1,0 +1,609 @@
+// Plain-text file viewer: toolbar, find bar, line-number gutter, selectable
+// read-only text, and status bar.
+
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton, Divider } from "theme.slint";
+import { FilesState } from "files_state.slint";
+
+// Toolbar link that can show an "on" state.
+export component ToolLink inherits LinkButton {
+    in property <bool> active;
+    text-color: active ? Theme.accent : Theme.text-muted;
+}
+
+// Title, path, and actions shared by the text and diff views.
+export component FileHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    background: Theme.surface;
+    height: header-row.preferred-height;
+
+    header-row := HorizontalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-m;
+        padding-top: Theme.pad-m;
+        padding-bottom: Theme.pad-m;
+        spacing: Theme.pad-l;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Theme.pad-xs;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-weight: 600;
+                overflow: elide;
+            }
+            if root.subtitle != "": Text {
+                text: root.subtitle;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.pad-xs;
+            @children
+        }
+    }
+}
+
+// Always instantiated (collapsed while closed) so opening it can move focus
+// synchronously, before any search result selects text in the viewer.
+component FindBar inherits Rectangle {
+    background: Theme.surface-alt;
+    height: FilesState.find-open ? find-row.preferred-height : 0px;
+    visible: FilesState.find-open;
+    clip: true;
+
+    public function focus-query() {
+        query.focus();
+        query.select-all();
+    }
+
+    property <int> focus-serial: FilesState.find-focus-serial;
+    changed focus-serial => {
+        root.focus-query();
+    }
+
+    find-row := HorizontalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-m;
+        padding-top: Theme.pad-s;
+        padding-bottom: Theme.pad-s;
+        spacing: Theme.pad-m;
+
+        query := LineEdit {
+            text <=> FilesState.find-query;
+            placeholder-text: "Find in file";
+            min-width: 140px;
+            preferred-width: 280px;
+            max-width: 360px;
+            horizontal-stretch: 1;
+            edited(text) => {
+                FilesState.find-edited(text);
+            }
+            accepted => {
+                FilesState.find-next();
+            }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    FilesState.close-find();
+                    return accept;
+                }
+                if event.text == Key.Return && event.modifiers.shift {
+                    FilesState.find-prev();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        Text {
+            text: FilesState.find-status;
+            color: FilesState.find-no-match ? Theme.danger : Theme.text-muted;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+            min-width: self.preferred-width;
+        }
+
+        ToolLink {
+            text: "Previous";
+            clicked => {
+                FilesState.find-prev();
+            }
+        }
+
+        ToolLink {
+            text: "Next";
+            clicked => {
+                FilesState.find-next();
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+
+        ToolLink {
+            text: "Close";
+            clicked => {
+                FilesState.close-find();
+            }
+        }
+    }
+}
+
+// Centered message with optional actions (loading, errors, binary files).
+export component Placeholder inherits Rectangle {
+    in property <string> heading;
+    in property <string> message;
+    background: Theme.surface;
+
+    VerticalLayout {
+        alignment: center;
+        padding: Theme.pad-xl;
+        spacing: Theme.pad-m;
+
+        Text {
+            text: root.heading;
+            color: Theme.text;
+            font-size: Theme.font-size-large;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.message != "": Text {
+            text: root.message;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: Theme.pad-m;
+            @children
+        }
+    }
+}
+
+component TextBody inherits Rectangle {
+    property <bool> wrap: FilesState.wrap;
+    // Space between the text and the edges of the scroll area.
+    property <length> pad: Theme.pad-m;
+    property <length> pad-x: root.wrap ? Theme.pad-l : Theme.pad-m;
+    // Average visual line height (exact when lines do not wrap).
+    property <length> line-height: FilesState.visual-lines > 0
+        ? input.preferred-height / FilesState.visual-lines : 0px;
+    property <length> char-width: probe.preferred-width / 10;
+    property <length> gutter-width: root.wrap ? 0px : FilesState.gutter-digits * root.char-width + 2 * Theme.pad-l;
+    // Center the next cursor move (find, go to line) instead of just
+    // keeping it visible.
+    property <bool> reveal;
+    property <int> sel-serial: FilesState.sel-serial;
+
+    background: Theme.surface;
+
+    property <bool> find-open: FilesState.find-open;
+    property <bool> restore-pending: FilesState.restore-pending;
+
+    // Lines in view, reported so Rust can highlight the matches near them.
+    property <int> first-line: root.line-height > 0px ? floor(max(0px, -scroll.content-y - root.pad) / root.line-height) : 0;
+    property <int> last-line: root.line-height > 0px ? floor(max(0px, -scroll.content-y - root.pad + scroll.visible-height) / root.line-height) : 0;
+    property <color> mark-color: Theme.dark ? #5a4816 : #fbe7a1;
+    property <color> current-mark-color: Theme.dark ? #e0a84a : #d88a00;
+
+    changed first-line => {
+        FilesState.viewport-changed(root.first-line, root.last-line);
+    }
+    changed last-line => {
+        FilesState.viewport-changed(root.first-line, root.last-line);
+    }
+
+    changed sel-serial => {
+        root.apply-selection();
+    }
+
+    changed find-open => {
+        if !root.find-open {
+            input.focus();
+        }
+    }
+
+    changed restore-pending => {
+        if root.restore-pending {
+            restore-timer.running = true;
+        }
+    }
+
+    init => {
+        if FilesState.sel-fresh {
+            root.apply-selection();
+        } else if FilesState.restore-pending {
+            restore-timer.running = true;
+        }
+        FilesState.viewport-changed(root.first-line, root.last-line);
+    }
+
+    function apply-selection() {
+        // A newer request than any saved scroll position.
+        FilesState.restore-pending = false;
+        FilesState.sel-fresh = false;
+        root.reveal = true;
+        input.set-selection-offsets(FilesState.sel-anchor, FilesState.sel-focus);
+    }
+
+    // Restores the saved scroll position on the next event-loop turn, once
+    // the content has been laid out (earlier, the scroll view clamps it).
+    restore-timer := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            // A text view on its way out must not take a diff tab's request.
+            if FilesState.restore-pending && !FilesState.is-diff {
+                FilesState.restore-pending = false;
+                scroll.content-x = FilesState.restore-x;
+                scroll.content-y = FilesState.restore-y;
+            }
+        }
+    }
+
+    // Keeps a cursor at `cpos` (TextInput coordinates) in view.
+    function follow-cursor(cpos: Point) {
+        let x = cpos.x + input.x;
+        let y = cpos.y + input.y;
+        let line = root.line-height > 0px ? root.line-height : Theme.font-size * 1.4;
+        let min-x = min(0px, scroll.visible-width - scroll.content-width);
+        let min-y = min(0px, scroll.visible-height - scroll.content-height);
+        if x + scroll.content-x < 0px {
+            scroll.content-x = max(min-x, min(0px, -x + root.pad-x));
+        } else if x + scroll.content-x > scroll.visible-width - root.pad-x {
+            scroll.content-x = max(min-x, min(0px, scroll.visible-width - x - 2 * root.pad-x));
+        }
+        if root.reveal {
+            scroll.content-y = max(min-y, min(0px, scroll.visible-height / 2 - y - line / 2));
+        } else if y + scroll.content-y < 0px {
+            scroll.content-y = max(min-y, min(0px, -y));
+        } else if y + line + scroll.content-y > scroll.visible-height {
+            scroll.content-y = max(min-y, min(0px, scroll.visible-height - y - line));
+        }
+    }
+
+    probe := Text {
+        text: "0000000000";
+        font-family: Theme.mono-font;
+        font-size: Theme.font-size;
+        visible: false;
+    }
+
+    if !root.wrap: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.gutter-width;
+        height: root.height;
+        background: Theme.surface-alt;
+        clip: true;
+
+        // One text block with every number, shaped like the content so the
+        // two stay aligned on any line; the renderer skips clipped lines.
+        Text {
+            x: 0px;
+            y: root.pad + scroll.content-y;
+            width: parent.width - Theme.pad-l;
+            height: self.preferred-height;
+            text: FilesState.gutter-text;
+            color: Theme.text-faint;
+            font-family: Theme.mono-font;
+            font-size: Theme.font-size;
+            horizontal-alignment: right;
+            vertical-alignment: top;
+        }
+    }
+
+    if !root.wrap: Rectangle {
+        x: root.gutter-width;
+        y: 0px;
+        width: 1px;
+        height: root.height;
+        background: Theme.border;
+    }
+
+    scroll := ScrollView {
+        x: root.wrap ? 0px : root.gutter-width + 1px;
+        y: 0px;
+        width: root.width - self.x;
+        height: root.height;
+        content-x <=> FilesState.scroll-x;
+        content-y <=> FilesState.scroll-y;
+        content-width: root.wrap ? self.visible-width : max(self.visible-width, input.preferred-width + 2 * root.pad-x);
+        content-height: max(self.visible-height, input.height + 2 * root.pad);
+
+        // Find highlights, behind the text. Every line of the unwrapped
+        // text has the same height, and measuring the line up to the match
+        // in the content font gives its exact horizontal position.
+        for mark in FilesState.find-marks: Rectangle {
+            // (An empty Text still reports the width of one character.)
+            x: input.x + (mark.prefix == "" ? 0px : prefix-probe.preferred-width) - 1px;
+            y: input.y + mark.line * root.line-height;
+            width: max(4px, match-probe.preferred-width + 2px);
+            height: root.line-height;
+            border-radius: 2px;
+            background: mark.current ? transparent : root.mark-color;
+            border-width: mark.current ? 1.5px : 0px;
+            border-color: root.current-mark-color;
+
+            prefix-probe := Text {
+                visible: false;
+                text: mark.prefix;
+                font-family: Theme.mono-font;
+                font-size: Theme.font-size;
+            }
+            match-probe := Text {
+                visible: false;
+                text: mark.text;
+                font-family: Theme.mono-font;
+                font-size: Theme.font-size;
+            }
+        }
+
+        input := TextInput {
+            x: root.pad-x;
+            y: root.pad;
+            width: root.wrap ? scroll.visible-width - 2 * root.pad-x : self.preferred-width;
+            height: self.preferred-height;
+            text: FilesState.content;
+            read-only: true;
+            single-line: false;
+            wrap: root.wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
+            font-family: Theme.mono-font;
+            font-size: Theme.font-size;
+            color: Theme.text;
+            selection-background-color: Theme.accent.with-alpha(Theme.dark ? 0.45 : 0.3);
+            selection-foreground-color: Theme.text;
+            page-height: scroll.visible-height;
+            cursor-position-changed(cpos) => {
+                FilesState.cursor-moved(self.cursor-position-byte-offset);
+                if root.reveal || self.has-focus {
+                    root.follow-cursor(cpos);
+                }
+                root.reveal = false;
+            }
+            init => {
+                if !FilesState.find-open {
+                    self.focus();
+                }
+            }
+        }
+    }
+}
+
+// The text viewer for one file tab.
+export component TextFileView inherits Rectangle {
+    background: Theme.surface;
+
+    // Text (rather than a loading, error, or binary notice) is showing.
+    property <bool> text-shown: FilesState.error == "" && !FilesState.binary
+        && !(FilesState.loading && FilesState.content == "");
+
+    function open-find() {
+        if root.text-shown {
+            FilesState.open-find();
+            find-bar.focus-query();
+        }
+    }
+
+    scope := FocusScope {
+        KeyBinding {
+            keys: @keys(Control + F);
+            activated => {
+                root.open-find();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + G);
+            activated => {
+                FilesState.go-to-line();
+            }
+        }
+        KeyBinding {
+            keys: @keys(F3);
+            activated => {
+                FilesState.find-next();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Shift + F3);
+            activated => {
+                FilesState.find-prev();
+            }
+        }
+
+        VerticalLayout {
+            FileHeader {
+                title: FilesState.title;
+                subtitle: FilesState.path;
+
+                ToolLink {
+                    text: "Wrap";
+                    enabled: root.text-shown;
+                    active: FilesState.wrap;
+                    clicked => {
+                        FilesState.toggle-wrap();
+                    }
+                }
+                ToolLink {
+                    text: "Find";
+                    enabled: root.text-shown;
+                    active: FilesState.find-open;
+                    clicked => {
+                        root.open-find();
+                    }
+                }
+                ToolLink {
+                    text: "Go to line";
+                    enabled: root.text-shown;
+                    clicked => {
+                        FilesState.go-to-line();
+                    }
+                }
+                if FilesState.is-text: ToolLink {
+                    text: "Copy all";
+                    enabled: root.text-shown;
+                    clicked => {
+                        FilesState.copy-all();
+                    }
+                }
+                if FilesState.is-text: ToolLink {
+                    text: "Save as…";
+                    enabled: root.text-shown;
+                    clicked => {
+                        FilesState.save-text-as();
+                    }
+                }
+                if !FilesState.is-text: ToolLink {
+                    text: "Copy path";
+                    clicked => {
+                        FilesState.copy-path();
+                    }
+                }
+                if !FilesState.is-text: ToolLink {
+                    text: "Reveal";
+                    clicked => {
+                        FilesState.reveal();
+                    }
+                }
+                if !FilesState.is-text: ToolLink {
+                    text: "Open externally";
+                    clicked => {
+                        FilesState.open-externally();
+                    }
+                }
+                if !FilesState.is-text: ToolLink {
+                    text: "Reload";
+                    clicked => {
+                        FilesState.reload();
+                    }
+                }
+            }
+
+            Divider { }
+
+            find-bar := FindBar { }
+            if FilesState.find-open: Divider { }
+
+            if FilesState.notice != "": Rectangle {
+                background: Theme.warning-soft;
+                height: notice-text.preferred-height + 2 * Theme.pad-s;
+                notice-text := Text {
+                    x: Theme.pad-l;
+                    width: parent.width - 2 * Theme.pad-l;
+                    text: FilesState.notice;
+                    color: Theme.warning;
+                    font-size: Theme.font-size-small;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if FilesState.error != "": Placeholder {
+                vertical-stretch: 1;
+                heading: "Could not open this file";
+                message: FilesState.error;
+                FlatButton {
+                    text: "Retry";
+                    clicked => {
+                        FilesState.reload();
+                    }
+                }
+            }
+
+            if FilesState.error == "" && FilesState.binary: Placeholder {
+                vertical-stretch: 1;
+                heading: FilesState.executable ? "Program not shown" : "Binary file not shown";
+                message: FilesState.binary-info;
+                // Opening a program runs it: offer Reveal instead.
+                FlatButton {
+                    text: FilesState.executable ? "Reveal" : "Open externally";
+                    primary: true;
+                    clicked => {
+                        if FilesState.executable {
+                            FilesState.reveal();
+                        } else {
+                            FilesState.open-externally();
+                        }
+                    }
+                }
+                FlatButton {
+                    text: "Show as text";
+                    clicked => {
+                        FilesState.show-as-text();
+                    }
+                }
+            }
+
+            if FilesState.error == "" && !FilesState.binary && FilesState.loading && FilesState.content == "": Placeholder {
+                vertical-stretch: 1;
+                heading: "Loading…";
+            }
+
+            if FilesState.error == "" && !FilesState.binary && !(FilesState.loading && FilesState.content == ""): TextBody {
+                vertical-stretch: 1;
+            }
+
+            if FilesState.truncated && FilesState.error == "" && !FilesState.binary: Rectangle {
+                background: Theme.accent-soft;
+                height: more-row.preferred-height;
+                more-row := HorizontalLayout {
+                    padding-left: Theme.pad-l;
+                    padding-right: Theme.pad-m;
+                    padding-top: Theme.pad-xs;
+                    padding-bottom: Theme.pad-xs;
+                    spacing: Theme.pad-m;
+                    Text {
+                        text: FilesState.truncated-info;
+                        color: Theme.text;
+                        font-size: Theme.font-size-small;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if FilesState.can-load-more: LinkButton {
+                        text: "Load more";
+                        clicked => {
+                            FilesState.load-more();
+                        }
+                    }
+                }
+            }
+
+            Divider { }
+
+            Rectangle {
+                background: Theme.surface-alt;
+                height: status-row.preferred-height;
+                status-row := HorizontalLayout {
+                    padding-left: Theme.pad-l;
+                    padding-right: Theme.pad-l;
+                    padding-top: Theme.pad-xs;
+                    padding-bottom: Theme.pad-xs;
+                    spacing: Theme.pad-l;
+                    Text {
+                        text: FilesState.details;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-size-small;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: FilesState.cursor-label;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-size-small;
+                    }
+                }
+            }
+        }
+    }
+}

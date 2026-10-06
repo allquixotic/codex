@@ -1,0 +1,224 @@
+// Building blocks for the Providers page (bedrock.slint). Flat and
+// renderer-safe like the rest of the theme.
+
+import { Theme, Badge } from "theme.slint";
+
+// One credential method in the Bedrock form.
+export struct BedrockMethodItem {
+    title: string,
+    detail: string,
+    badges: [string],
+    // Input fields shown when selected: 0 none, 1 profile name,
+    // 2 access keys, 3 API key. Mirrors `MethodFields::code` in Rust.
+    fields: int,
+}
+
+// Bordered surface that groups one section of the page.
+export component Card inherits Rectangle {
+    background: Theme.surface;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    VerticalLayout {
+        padding: Theme.pad-l + Theme.pad-s;
+        spacing: Theme.pad-l;
+        @children
+    }
+}
+
+// Section title with an optional one-line description; trailing actions go
+// in the children.
+export component SectionHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> description;
+    spacing: Theme.pad-m;
+
+    VerticalLayout {
+        spacing: Theme.pad-xs;
+        horizontal-stretch: 1;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.font-size-large;
+            font-weight: 600;
+        }
+        if root.description != "": Text {
+            text: root.description;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+
+    @children
+}
+
+// "Label   value" row of the status card.
+export component KeyValue inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> muted: false;
+    spacing: Theme.pad-l;
+
+    Text {
+        text: root.label;
+        color: Theme.text-muted;
+        width: 104px;
+    }
+    Text {
+        text: root.value;
+        color: root.muted ? Theme.text-faint : Theme.text;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+    }
+}
+
+// Small form label above an input.
+export component FieldLabel inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-size-small;
+}
+
+// Inline message: 0 info, 1 success, 2 warning, 3 error.
+export component Notice inherits Rectangle {
+    in property <string> text;
+    in property <int> kind: 0;
+    property <color> fg: kind == 3 ? Theme.danger : kind == 2 ? Theme.warning : kind == 1 ? Theme.success : Theme.text;
+
+    background: kind == 3 ? Theme.danger-soft : kind == 2 ? Theme.warning-soft : kind == 1 ? Theme.success-soft : Theme.accent-soft;
+    border-radius: Theme.radius-small;
+
+    HorizontalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-l;
+        padding-top: Theme.pad-m;
+        padding-bottom: Theme.pad-m;
+        spacing: Theme.pad-m;
+
+        Text {
+            text: root.text;
+            color: root.fg;
+            wrap: word-wrap;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        @children
+    }
+}
+
+// Radio-style row for a credential method.
+export component MethodRow inherits Rectangle {
+    in property <BedrockMethodItem> item;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : Theme.border;
+    background: root.selected ? Theme.accent-soft : touch.has-hover && root.enabled ? Theme.hover : Theme.surface;
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-l;
+        padding-top: Theme.pad-m;
+        padding-bottom: Theme.pad-m;
+        spacing: Theme.pad-l;
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border-width: root.selected ? 5px : 1px;
+                border-color: root.selected ? Theme.accent : Theme.border-strong;
+                background: Theme.surface;
+            }
+        }
+
+        VerticalLayout {
+            spacing: Theme.pad-xs;
+            horizontal-stretch: 1;
+            alignment: center;
+
+            HorizontalLayout {
+                spacing: Theme.pad-m;
+                Text {
+                    text: root.item.title;
+                    color: root.enabled ? Theme.text : Theme.text-faint;
+                    font-weight: 600;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                for badge in root.item.badges: VerticalLayout {
+                    alignment: center;
+                    Badge {
+                        text: badge;
+                        fg: Theme.accent;
+                        bg: root.selected ? Theme.surface : Theme.accent-soft;
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+            if root.item.detail != "": Text {
+                text: root.item.detail;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// One half of a two-option segmented control.
+export component SegmentButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    min-height: 28px;
+    min-width: label.preferred-width + 2 * Theme.pad-xl;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: root.checked ? Theme.accent : Theme.border;
+    background: root.checked ? Theme.accent-soft : touch.has-hover && root.enabled ? Theme.hover : Theme.surface;
+
+    label := Text {
+        text: root.text;
+        color: !root.enabled ? Theme.text-faint : root.checked ? Theme.accent : Theme.text;
+        font-weight: root.checked ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Status dot: 0 unknown, 1 checking, 2 running, 3 unavailable.
+export component StatusDot inherits Rectangle {
+    in property <int> state;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: root.state == 2 ? Theme.success : root.state == 1 ? Theme.text-faint : transparent;
+    border-width: root.state == 2 || root.state == 1 ? 0px : 1px;
+    border-color: Theme.border-strong;
+}

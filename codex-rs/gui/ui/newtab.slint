@@ -1,0 +1,574 @@
+// New-tab page: recent folders, folder and file pickers, resume, sign-in,
+// plus the picker overlay that asks before a thread action runs (folder
+// trust, folders on a remote server, review targets).
+//
+// Rust (src/newtab.rs) fills the folder list and runs the folder-trust check
+// before a thread starts; src/threads/picker.rs drives the picker overlay.
+
+import { ScrollView, ListView, LineEdit } from "std-widgets.slint";
+import { Theme, FlatButton } from "theme.slint";
+
+export struct RecentFolder {
+    path: string,
+    name: string,
+    // Path for display (home shortened to "~").
+    detail: string,
+    // "3 threads", or empty when no listed thread uses the folder.
+    threads: string,
+    // In the GUI's own recent list (can be removed from it).
+    removable: bool,
+}
+
+export global NewTabState {
+    in property <[RecentFolder]> folders;
+    in property <bool> sign-in-needed;
+
+    callback choose-folder();
+    callback open-file();
+    callback resume-thread();
+    callback sign-in();
+    callback open-folder(path: string);
+    callback folder-action(path: string, action: string);
+}
+
+component FolderEntry inherits Rectangle {
+    in property <RecentFolder> folder;
+    in property <bool> divider;
+
+    height: 52px;
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "New thread here";
+                activated => { NewTabState.open-folder(folder.path); }
+            }
+            MenuItem {
+                title: "Open folder";
+                activated => { NewTabState.folder-action(folder.path, "open-folder"); }
+            }
+            MenuItem {
+                title: "Copy path";
+                activated => { NewTabState.folder-action(folder.path, "copy-path"); }
+            }
+            if folder.removable: MenuSeparator { }
+            if folder.removable: MenuItem {
+                title: "Remove from recent";
+                activated => { NewTabState.folder-action(folder.path, "forget"); }
+            }
+        }
+
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { NewTabState.open-folder(folder.path); }
+        }
+    }
+
+    background: touch.has-hover ? Theme.hover : transparent;
+
+    if divider: Rectangle {
+        y: 0;
+        x: Theme.pad-l;
+        width: parent.width - 2 * Theme.pad-l;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-l;
+        spacing: Theme.pad-l;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.pad-xs;
+            horizontal-stretch: 1;
+
+            Text {
+                text: folder.name;
+                color: Theme.text;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: folder.detail;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+            }
+        }
+        Text {
+            text: folder.threads;
+            color: Theme.text-faint;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component NewTabView inherits Rectangle {
+    background: Theme.window-bg;
+
+    ScrollView {
+        VerticalLayout {
+            alignment: start;
+            padding-top: max(Theme.pad-xl, (root.height - 560px) / 3);
+            padding-bottom: Theme.pad-xl;
+
+            HorizontalLayout {
+                alignment: center;
+
+                VerticalLayout {
+                    width: max(240px, min(root.width - 48px, 600px));
+                    alignment: start;
+                    spacing: Theme.pad-l;
+
+                    Text {
+                        text: "Start a new thread";
+                        color: Theme.text;
+                        font-size: Theme.font-size-title;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: "Pick a folder for the agent to work in. Each tab is one thread in one folder.";
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+
+                    if NewTabState.sign-in-needed: Rectangle {
+                        background: Theme.accent-soft;
+                        border-radius: Theme.radius;
+
+                        HorizontalLayout {
+                            padding: Theme.pad-l;
+                            spacing: Theme.pad-l;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: Theme.pad-xs;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: "Sign in to use Codex";
+                                    color: Theme.text;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "Use your ChatGPT account or an API key, or set up another provider.";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.font-size-small;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                FlatButton {
+                                    text: "Sign in…";
+                                    primary: true;
+                                    clicked => { NewTabState.sign-in(); }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: Theme.pad-m;
+
+                        FlatButton {
+                            text: "Choose folder…";
+                            primary: true;
+                            clicked => { NewTabState.choose-folder(); }
+                        }
+                        FlatButton {
+                            text: "Open file…";
+                            clicked => { NewTabState.open-file(); }
+                        }
+                        FlatButton {
+                            text: "Resume a thread";
+                            clicked => { NewTabState.resume-thread(); }
+                        }
+                    }
+
+                    Rectangle {
+                        height: Theme.pad-s;
+                    }
+
+                    Text {
+                        text: "Recent folders";
+                        color: Theme.text-muted;
+                        font-size: Theme.font-size-small;
+                        font-weight: 600;
+                    }
+
+                    if NewTabState.folders.length > 0: Rectangle {
+                        background: Theme.surface;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.border;
+
+                        VerticalLayout {
+                            padding-top: Theme.pad-xs;
+                            padding-bottom: Theme.pad-xs;
+
+                            for folder[index] in NewTabState.folders: FolderEntry {
+                                folder: folder;
+                                divider: index > 0;
+                            }
+                        }
+                    }
+
+                    if NewTabState.folders.length == 0: Text {
+                        text: "Folders you work in will appear here.";
+                        color: Theme.text-faint;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One row of the picker overlay's list.
+export struct PickerItem {
+    title: string,
+    detail: string,
+    // Faint text at the right end ("›" for rows that open a level deeper).
+    trailing: string,
+}
+
+// Modal picker shown over the window (src/threads/picker.rs). Rust fills in
+// one step at a time; the overlay reports what was chosen.
+export global PickerState {
+    in property <bool> open;
+    // Bumped by Rust when a new step is shown, to move keyboard focus.
+    in property <int> serial;
+    in property <string> title;
+    in property <string> message;
+    in property <bool> input-visible;
+    in property <string> input-label;
+    in property <string> input-placeholder;
+    in-out property <string> input-text;
+    in property <bool> list-visible;
+    in property <[PickerItem]> items;
+    in-out property <int> selected: -1;
+    // Shown instead of the list while it is empty.
+    in property <string> list-placeholder;
+    // A click runs the row (menus, folders) instead of only selecting it.
+    in property <bool> click-activates;
+    in property <string> note;
+    in property <bool> note-error;
+    // Empty labels hide their buttons.
+    in property <string> back-label;
+    in property <string> cancel-label;
+    in property <string> secondary-label;
+    in property <string> accept-label;
+    in property <bool> accept-enabled: true;
+    // The accept button also needs a selected row.
+    in property <bool> accept-needs-selection;
+
+    callback input-edited(text: string);
+    callback input-accepted();
+    callback item-activated(index: int);
+    // "accept", "secondary", "back" or "cancel".
+    callback button(which: string);
+}
+
+component PickerRow inherits Rectangle {
+    in property <PickerItem> item;
+    in property <bool> selected;
+    callback clicked();
+    callback double-clicked();
+
+    height: 40px;
+    border-radius: Theme.radius-small;
+    background: selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+        double-clicked => {
+            root.double-clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.pad-m;
+        padding-right: Theme.pad-m;
+        spacing: Theme.pad-m;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.pad-xs;
+            horizontal-stretch: 1;
+
+            Text {
+                text: item.title;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if item.detail != "": Text {
+                text: item.detail;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+            }
+        }
+        if item.trailing != "": Text {
+            text: item.trailing;
+            color: Theme.text-faint;
+            // The "›" marker reads as a dot at the small size.
+            font-size: item.trailing == "›" ? Theme.font-size-title : Theme.font-size-small;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The picker's text field. Takes the keyboard focus when it appears and
+// whenever Rust shows a new step; arrow keys move the list selection.
+component PickerInput inherits VerticalLayout {
+    property <int> serial: PickerState.serial;
+    callback move-selection(delta: int);
+
+    changed serial => {
+        edit.focus();
+    }
+    init => {
+        edit.focus();
+    }
+
+    spacing: Theme.pad-s;
+
+    if PickerState.input-label != "": Text {
+        text: PickerState.input-label;
+        color: Theme.text-muted;
+        font-size: Theme.font-size-small;
+        font-weight: 600;
+    }
+    edit := LineEdit {
+        text <=> PickerState.input-text;
+        placeholder-text: PickerState.input-placeholder;
+        font-size: Theme.font-size;
+        edited(text) => {
+            PickerState.input-edited(text);
+        }
+        accepted => {
+            PickerState.input-accepted();
+        }
+        key-pressed(event) => {
+            if event.text == Key.UpArrow {
+                root.move-selection(-1);
+                return accept;
+            }
+            if event.text == Key.DownArrow {
+                root.move-selection(1);
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+export component PickerOverlay inherits Rectangle {
+    property <length> row-height: 40px;
+    property <bool> can-accept: PickerState.accept-enabled
+        && (!PickerState.accept-needs-selection
+            || (PickerState.selected >= 0 && PickerState.selected < PickerState.items.length));
+
+    visible: PickerState.open;
+
+    function move-selection(delta: int) {
+        if PickerState.items.length == 0 {
+            return;
+        }
+        PickerState.selected = max(0, min(PickerState.items.length - 1, PickerState.selected + delta));
+    }
+
+    function activate-or-accept() {
+        if PickerState.list-visible && PickerState.selected >= 0 && PickerState.selected < PickerState.items.length {
+            PickerState.item-activated(PickerState.selected);
+        } else if root.can-accept && PickerState.accept-label != "" {
+            PickerState.button("accept");
+        }
+    }
+
+    if PickerState.open: Rectangle {
+        background: #00000060;
+
+        // Modal: swallow clicks on the backdrop.
+        TouchArea { }
+
+        card := Rectangle {
+            width: min(parent.width - 2 * Theme.pad-xl, 560px);
+            height: min(layout.preferred-height, parent.height - 2 * Theme.pad-xl);
+            x: (parent.width - self.width) / 2;
+            y: max(Theme.pad-xl, (parent.height - self.height) / 3);
+            background: Theme.surface;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+
+            TouchArea { }
+
+            FocusScope {
+                property <int> serial: PickerState.serial;
+
+                // With an input field, `PickerInput` takes the focus itself.
+                changed serial => {
+                    if !PickerState.input-visible {
+                        self.focus();
+                    }
+                }
+                init => {
+                    if !PickerState.input-visible {
+                        self.focus();
+                    }
+                }
+
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        PickerState.button("cancel");
+                        return accept;
+                    }
+                    if event.text == Key.UpArrow {
+                        root.move-selection(-1);
+                        return accept;
+                    }
+                    if event.text == Key.DownArrow {
+                        root.move-selection(1);
+                        return accept;
+                    }
+                    if event.text == Key.Return {
+                        root.activate-or-accept();
+                        return accept;
+                    }
+                    reject
+                }
+
+                layout := VerticalLayout {
+                    padding: Theme.pad-xl;
+                    spacing: Theme.pad-l;
+
+                    Text {
+                        text: PickerState.title;
+                        color: Theme.text;
+                        font-size: Theme.font-size-large;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    if PickerState.message != "": Text {
+                        text: PickerState.message;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+
+                    if PickerState.input-visible: PickerInput {
+                        move-selection(delta) => {
+                            root.move-selection(delta);
+                        }
+                    }
+
+                    if PickerState.list-visible && PickerState.items.length == 0: Rectangle {
+                        height: 56px;
+                        border-radius: Theme.radius-small;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        background: Theme.surface-alt;
+                        Text {
+                            x: Theme.pad-l;
+                            width: parent.width - 2 * Theme.pad-l;
+                            text: PickerState.list-placeholder;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if PickerState.list-visible && PickerState.items.length > 0: Rectangle {
+                        min-height: root.row-height + 2px;
+                        preferred-height: min(PickerState.items.length, 8) * root.row-height + 2px;
+                        max-height: min(PickerState.items.length, 8) * root.row-height + 2px;
+                        vertical-stretch: 1;
+                        border-radius: Theme.radius-small;
+                        border-width: 1px;
+                        border-color: Theme.border;
+
+                        ListView {
+                            property <int> selected: PickerState.selected;
+                            x: 1px;
+                            y: 1px;
+                            width: parent.width - 2px;
+                            height: parent.height - 2px;
+                            horizontal-scrollbar-policy: always-off;
+
+                            changed selected => {
+                                if self.selected >= 0 {
+                                    if self.selected * root.row-height + self.content-y < 0px {
+                                        self.content-y = -self.selected * root.row-height;
+                                    } else if (self.selected + 1) * root.row-height + self.content-y > self.visible-height {
+                                        self.content-y = self.visible-height - (self.selected + 1) * root.row-height;
+                                    }
+                                }
+                            }
+
+                            for item[index] in PickerState.items: PickerRow {
+                                item: item;
+                                selected: index == PickerState.selected;
+                                clicked => {
+                                    PickerState.selected = index;
+                                    if PickerState.click-activates {
+                                        PickerState.item-activated(index);
+                                    }
+                                }
+                                double-clicked => {
+                                    PickerState.item-activated(index);
+                                }
+                            }
+                        }
+                    }
+
+                    if PickerState.note != "": Text {
+                        text: PickerState.note;
+                        color: PickerState.note-error ? Theme.danger : Theme.text-faint;
+                        font-size: Theme.font-size-small;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.pad-m;
+                        if PickerState.back-label != "": FlatButton {
+                            text: PickerState.back-label;
+                            clicked => {
+                                PickerState.button("back");
+                            }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                        if PickerState.cancel-label != "": FlatButton {
+                            text: PickerState.cancel-label;
+                            clicked => {
+                                PickerState.button("cancel");
+                            }
+                        }
+                        if PickerState.secondary-label != "": FlatButton {
+                            text: PickerState.secondary-label;
+                            clicked => {
+                                PickerState.button("secondary");
+                            }
+                        }
+                        if PickerState.accept-label != "": FlatButton {
+                            text: PickerState.accept-label;
+                            primary: true;
+                            enabled: root.can-accept;
+                            clicked => {
+                                PickerState.button("accept");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

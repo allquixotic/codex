@@ -3,6 +3,7 @@ use std::fs::File;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
 use codex_async_utils::THREAD_STACK_SIZE_BYTES;
@@ -58,6 +59,13 @@ impl Arg0PathEntryGuard {
 }
 
 pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
+    arg0_dispatch_with_env_hook(|| {})
+}
+
+/// [`arg0_dispatch`] with `prepare_env` run once the process is known to be
+/// the regular program (not a helper re-exec), while it is still
+/// single-threaded and before `.env` and the PATH aliases are applied.
+fn arg0_dispatch_with_env_hook(prepare_env: impl FnOnce()) -> Option<Arg0PathEntryGuard> {
     #[cfg(target_os = "linux")]
     codex_utils_pty::init_spawn_helper(std::env::args_os());
     // Determine if we were invoked via the special alias.
@@ -154,6 +162,8 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         std::process::exit(exit_code);
     }
 
+    prepare_env();
+
     // This modifies the environment, which is not thread-safe, so do this
     // before creating any threads/the Tokio runtime.
     load_dotenv();
@@ -247,6 +257,62 @@ where
     }
 }
 
+/// Variant of [`arg0_dispatch_or_else`] for binaries whose UI toolkit must own
+/// the process main thread (AppKit on macOS requires windows and the event
+/// loop to live there).
+///
+/// Performs the same multicall dispatch, `.env` loading, and PATH alias setup,
+/// then builds the multi-thread Tokio runtime on background worker threads and
+/// calls `main_fn` synchronously on the calling thread with the dispatch paths
+/// and a handle to that runtime. `main_fn` must not block the runtime's
+/// workers on the calling thread; it should spawn async work through the
+/// handle and keep the calling thread for its event loop.
+///
+/// `prepare_env` runs only for the regular program, not for helper
+/// re-execs, while the process is still single-threaded (so it may call
+/// `std::env::set_var`) and before `.env` and the PATH aliases are applied.
+///
+/// The runtime and the PATH alias guard stay alive until `main_fn` returns.
+/// Tasks still running at that point get `runtime_shutdown_timeout` to finish
+/// before the runtime is dropped.
+pub fn arg0_dispatch_or_else_keep_main_thread<P, F, R>(
+    runtime_shutdown_timeout: Duration,
+    prepare_env: P,
+    main_fn: F,
+) -> anyhow::Result<R>
+where
+    P: FnOnce(),
+    F: FnOnce(Arg0DispatchPaths, tokio::runtime::Handle) -> anyhow::Result<R>,
+{
+    let path_entry_guard = arg0_dispatch_with_env_hook(prepare_env);
+    let current_exe = std::env::current_exe().ok();
+    run_on_caller_thread_with_arg0_guard(
+        path_entry_guard,
+        current_exe,
+        runtime_shutdown_timeout,
+        main_fn,
+    )
+}
+
+fn run_on_caller_thread_with_arg0_guard<F, R>(
+    path_entry_guard: Option<Arg0PathEntryGuard>,
+    current_exe: Option<PathBuf>,
+    runtime_shutdown_timeout: Duration,
+    main_fn: F,
+) -> anyhow::Result<R>
+where
+    F: FnOnce(Arg0DispatchPaths, tokio::runtime::Handle) -> anyhow::Result<R>,
+{
+    let runtime = build_runtime()?;
+    let paths = dispatch_paths(path_entry_guard.as_ref(), current_exe);
+    let result = main_fn(paths, runtime.handle().clone());
+    runtime.shutdown_timeout(runtime_shutdown_timeout);
+    // Runtime paths can point at aliases inside the guarded tempdir, so drop
+    // the guard only after every runtime task has stopped.
+    drop(path_entry_guard);
+    result
+}
+
 async fn run_main_with_arg0_guard<F, Fut>(
     path_entry_guard: Option<Arg0PathEntryGuard>,
     current_exe: Option<PathBuf>,
@@ -256,23 +322,29 @@ where
     F: FnOnce(Arg0DispatchPaths) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
-    let paths = Arg0DispatchPaths {
-        codex_self_exe: current_exe.clone(),
-        codex_linux_sandbox_exe: if cfg!(target_os = "linux") {
-            linux_sandbox_exe_path(path_entry_guard.as_ref(), current_exe)
-        } else {
-            None
-        },
-        main_execve_wrapper_exe: path_entry_guard
-            .as_ref()
-            .and_then(|path_entry| path_entry.paths().main_execve_wrapper_exe.clone()),
-    };
+    let paths = dispatch_paths(path_entry_guard.as_ref(), current_exe);
 
     let result = main_fn(paths).await;
     // Keep the arg0 tempdir guard alive until the async entry point finishes;
     // runtime paths above can point at aliases inside that directory.
     drop(path_entry_guard);
     result
+}
+
+fn dispatch_paths(
+    path_entry_guard: Option<&Arg0PathEntryGuard>,
+    current_exe: Option<PathBuf>,
+) -> Arg0DispatchPaths {
+    Arg0DispatchPaths {
+        codex_self_exe: current_exe.clone(),
+        codex_linux_sandbox_exe: if cfg!(target_os = "linux") {
+            linux_sandbox_exe_path(path_entry_guard, current_exe)
+        } else {
+            None
+        },
+        main_execve_wrapper_exe: path_entry_guard
+            .and_then(|path_entry| path_entry.paths().main_execve_wrapper_exe.clone()),
+    }
 }
 
 fn linux_sandbox_exe_path(
@@ -767,6 +839,55 @@ mod tests {
                 Ok(())
             },
         ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keep_main_thread_runs_on_caller_thread_with_live_runtime() -> anyhow::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let alias_path = temp_dir.path().join("codex-helper-alias");
+        fs::write(&alias_path, b"")?;
+        let lock_file = create_lock(temp_dir.path())?;
+        let path_entry = Arg0PathEntryGuard::new(
+            temp_dir,
+            lock_file,
+            Arg0DispatchPaths {
+                codex_self_exe: Some(PathBuf::from("/usr/bin/codex")),
+                codex_linux_sandbox_exe: Some(alias_path.clone()),
+                main_execve_wrapper_exe: Some(alias_path.clone()),
+            },
+        );
+        let caller_thread = std::thread::current().id();
+
+        let worker_saw_alias = super::run_on_caller_thread_with_arg0_guard(
+            Some(path_entry),
+            Some(PathBuf::from("/usr/bin/codex")),
+            std::time::Duration::from_secs(1),
+            |paths, handle| {
+                ensure!(
+                    std::thread::current().id() == caller_thread,
+                    "main_fn must run on the calling thread"
+                );
+                let alias_path = paths
+                    .codex_linux_sandbox_exe
+                    .or(paths.main_execve_wrapper_exe)
+                    .expect("unix dispatch should create at least one alias path");
+                let (tx, rx) = std::sync::mpsc::channel();
+                handle.spawn(async move {
+                    let _ = tx.send((std::thread::current().id(), alias_path.exists()));
+                });
+                let (worker_thread, alias_exists) = rx.recv()?;
+                ensure!(
+                    worker_thread != caller_thread,
+                    "spawned tasks must run on runtime workers, not the caller thread"
+                );
+                Ok(alias_exists)
+            },
+        )?;
+
+        assert!(worker_saw_alias);
+        assert!(!alias_path.exists());
+        Ok(())
     }
 
     #[test]

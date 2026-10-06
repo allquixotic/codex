@@ -1,0 +1,642 @@
+// Approvals: pending server requests (command, file-change and permission
+// approvals, user-input questions, MCP elicitations) for the active thread tab.
+//
+// Rust (src/approvals/) renders the oldest pending request of the active tab
+// into `ApprovalsState`. The card reports choices and form edits back through
+// the global's callbacks; Rust stays the source of truth for form state.
+
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton, Badge } from "theme.slint";
+import { ComposerState } from "composer.slint";
+
+// How the card is answered: a list of options, or a form with buttons.
+export enum ApprovalCardKind { choices, form }
+
+// Visual weight of an option row.
+export enum ApprovalTone { neutral, positive, negative }
+
+export struct ApprovalOptionData {
+    label: string,
+    // Keyboard shortcut shown in the key chip ("Y", "A", "Esc").
+    key: string,
+    tone: ApprovalTone,
+}
+
+export enum ApprovalDiffKind { context, added, removed, hunk, file, note }
+
+export struct ApprovalDiffLine {
+    text: string,
+    kind: ApprovalDiffKind,
+}
+
+export enum ApprovalFieldKind { single-choice, multi-choice, text, number, boolean }
+
+export struct ApprovalChoiceData {
+    label: string,
+    description: string,
+    checked: bool,
+}
+
+// One form input: a user-input question or an MCP elicitation field.
+export struct ApprovalFieldData {
+    kind: ApprovalFieldKind,
+    header: string,
+    prompt: string,
+    required: bool,
+    choices: [ApprovalChoiceData],
+    show-text: bool,
+    text: string,
+    placeholder: string,
+    secret: bool,
+    error: string,
+}
+
+export global ApprovalsState {
+    // Undecided requests on the active tab; the card shows the oldest.
+    in property <int> pending-count;
+    in property <ApprovalCardKind> kind;
+    in property <string> title;
+    // "1 of 3" when several requests wait; empty otherwise.
+    in property <string> position;
+    // Which other thread asked (sub-agent label); empty for the tab's own thread.
+    in property <string> origin;
+    in property <string> reason;
+    // Command or input shown in a monospace block; empty hides the block.
+    in property <string> code;
+    in property <string> code-caption;
+    // Extra lines (inline markdown: bold labels, code spans).
+    in property <[styled-text]> details;
+    in property <[ApprovalDiffLine]> diff;
+    in property <string> link;
+    in property <[ApprovalOptionData]> options;
+    // -1 = no option highlighted (Enter does nothing until one is chosen).
+    in-out property <int> highlighted;
+    in property <[ApprovalFieldData]> fields;
+    in property <string> submit-label: "Submit";
+    in property <string> secondary-label;
+    in property <string> tertiary-label;
+    in property <string> form-error;
+    in property <string> hint;
+    // Rust bumps this to move keyboard focus to the card. The card takes it
+    // only when `grab-focus` is set (empty composer, no dialog open) and no
+    // text input other than the composer has focus.
+    in property <int> focus-serial;
+    in property <bool> grab-focus;
+    // Keyboard focus inside the card (Esc cancels the request then): the card
+    // itself, or the form field with this index (-1 = none). Tracked
+    // separately so the order of focus events cannot leave a stale value.
+    in-out property <bool> card-focused;
+    in-out property <int> focused-field: -1;
+
+    callback choose(int);
+    // A plain key pressed while the card has focus (letters, digits, Enter,
+    // Esc); true when handled. Rust ignores keys right after the card changed.
+    callback key(string) -> bool;
+    // The card got focus back with the window: hold off keys briefly again.
+    callback rearm();
+    callback toggle-choice(int, int);
+    callback edit-text(int, string);
+    callback submit();
+    callback secondary();
+    callback tertiary();
+    callback open-link();
+    callback copy-code();
+}
+
+component KeyChip inherits Rectangle {
+    in property <string> text;
+    in property <ApprovalTone> tone;
+
+    width: max(30px, label.preferred-width + 2 * Theme.pad-s);
+    height: 20px;
+    border-radius: Theme.radius-small;
+    background: root.tone == ApprovalTone.positive ? Theme.accent-soft
+        : root.tone == ApprovalTone.negative ? Theme.danger-soft
+        : Theme.surface-alt;
+
+    label := Text {
+        text: root.text;
+        font-size: Theme.font-size-small;
+        font-family: Theme.mono-font;
+        color: root.tone == ApprovalTone.positive ? Theme.accent
+            : root.tone == ApprovalTone.negative ? Theme.danger
+            : Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component OptionRow inherits Rectangle {
+    in property <ApprovalOptionData> option;
+    in property <bool> highlighted;
+    callback activate();
+
+    min-height: max(30px, row-layout.min-height);
+    preferred-height: max(30px, row-layout.preferred-height);
+    border-radius: Theme.radius-small;
+    background: touch.pressed ? Theme.selected
+        : root.highlighted ? Theme.selected
+        : touch.has-hover ? Theme.hover
+        : transparent;
+
+    row-layout := HorizontalLayout {
+        padding-left: Theme.pad-s;
+        padding-right: Theme.pad-m;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: Theme.pad-m;
+
+        VerticalLayout {
+            alignment: start;
+            KeyChip {
+                text: root.option.key;
+                tone: root.option.tone;
+            }
+        }
+
+        Text {
+            text: root.option.label;
+            color: Theme.text;
+            font-weight: root.highlighted ? 600 : 400;
+            wrap: word-wrap;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.activate();
+        }
+    }
+}
+
+// Radio button or checkbox row inside a form field.
+component ChoiceRow inherits Rectangle {
+    in property <ApprovalChoiceData> choice;
+    in property <bool> multi;
+    callback toggled();
+
+    min-height: max(26px, row-layout.min-height);
+    preferred-height: max(26px, row-layout.preferred-height);
+    border-radius: Theme.radius-small;
+    background: touch.has-hover ? Theme.hover : transparent;
+
+    row-layout := HorizontalLayout {
+        padding-left: Theme.pad-s;
+        padding-right: Theme.pad-m;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: Theme.pad-m;
+
+        VerticalLayout {
+            alignment: start;
+            padding-top: 1px;
+            Rectangle {
+                width: 14px;
+                height: 14px;
+                border-radius: root.multi ? 3px : 7px;
+                border-width: root.choice.checked ? 0px : 1px;
+                border-color: Theme.border-strong;
+                background: root.choice.checked ? Theme.accent : Theme.surface;
+
+                if root.choice.checked && !root.multi: Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.text-on-accent;
+                }
+                if root.choice.checked && root.multi: Text {
+                    text: "✓";
+                    color: Theme.text-on-accent;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 1px;
+            Text {
+                text: root.choice.label;
+                color: Theme.text;
+                wrap: word-wrap;
+            }
+            if root.choice.description != "": Text {
+                text: root.choice.description;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+component FieldView inherits VerticalLayout {
+    in property <ApprovalFieldData> field;
+    in property <int> index;
+
+    spacing: Theme.pad-s;
+
+    if root.field.header != "": Text {
+        text: root.field.header;
+        color: Theme.text-muted;
+        font-size: Theme.font-size-small;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    if root.field.prompt != "": Text {
+        // Required fields carry their "*" in the header (set by Rust).
+        text: root.field.prompt;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    if root.field.kind == ApprovalFieldKind.single-choice || root.field.kind == ApprovalFieldKind.multi-choice
+        || root.field.kind == ApprovalFieldKind.boolean: VerticalLayout {
+        spacing: 2px;
+        for choice[choice-index] in root.field.choices: ChoiceRow {
+            choice: choice;
+            multi: root.field.kind != ApprovalFieldKind.single-choice;
+            toggled => {
+                ApprovalsState.toggle-choice(root.index, choice-index);
+            }
+        }
+    }
+    if root.field.show-text: edit := LineEdit {
+        text: root.field.text;
+        placeholder-text: root.field.placeholder;
+        input-type: root.field.secret ? InputType.password
+            : root.field.kind == ApprovalFieldKind.number ? InputType.decimal
+            : InputType.text;
+        edited(text) => {
+            ApprovalsState.edit-text(root.index, text);
+        }
+        accepted => {
+            ApprovalsState.submit();
+        }
+        changed has-focus => {
+            if self.has-focus {
+                ApprovalsState.focused-field = root.index;
+            } else if ApprovalsState.focused-field == root.index {
+                ApprovalsState.focused-field = -1;
+            }
+        }
+    }
+    if root.field.error != "": Text {
+        text: root.field.error;
+        color: Theme.danger;
+        font-size: Theme.font-size-small;
+        wrap: word-wrap;
+    }
+}
+
+component DiffRow inherits Rectangle {
+    in property <ApprovalDiffLine> line;
+
+    height: 18px;
+    min-width: label.preferred-width + 2 * Theme.pad-m;
+    background: root.line.kind == ApprovalDiffKind.added ? Theme.diff-add-bg
+        : root.line.kind == ApprovalDiffKind.removed ? Theme.diff-del-bg
+        : root.line.kind == ApprovalDiffKind.file ? Theme.surface-alt
+        : transparent;
+
+    label := Text {
+        x: Theme.pad-m;
+        text: root.line.text;
+        font-family: Theme.mono-font;
+        font-size: Theme.font-size-small;
+        font-weight: root.line.kind == ApprovalDiffKind.file ? 600 : 400;
+        font-italic: root.line.kind == ApprovalDiffKind.note;
+        vertical-alignment: center;
+        color: root.line.kind == ApprovalDiffKind.added ? Theme.diff-add-fg
+            : root.line.kind == ApprovalDiffKind.removed ? Theme.diff-del-fg
+            : root.line.kind == ApprovalDiffKind.hunk ? Theme.diff-hunk-fg
+            : root.line.kind == ApprovalDiffKind.note ? Theme.text-muted
+            : Theme.text;
+    }
+}
+
+component ApprovalBadges inherits HorizontalLayout {
+    spacing: Theme.pad-s;
+    if ApprovalsState.origin != "": VerticalLayout {
+        alignment: center;
+        Badge {
+            text: ApprovalsState.origin;
+            fg: Theme.accent;
+            bg: Theme.accent-soft;
+        }
+    }
+    if ApprovalsState.position != "": VerticalLayout {
+        alignment: center;
+        Badge {
+            text: ApprovalsState.position;
+        }
+    }
+}
+
+component ApprovalCard inherits Rectangle {
+    property <int> serial: ApprovalsState.focus-serial;
+    // Narrow cards put the badges under the title instead of beside it.
+    property <bool> compact: root.width < 600px;
+    property <bool> focused: fs.has-focus || ApprovalsState.focused-field >= 0;
+
+    min-height: body.min-height;
+    preferred-height: body.preferred-height;
+    background: Theme.surface;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: root.focused ? Theme.accent : Theme.border-strong;
+
+    // Takes keyboard focus only from the composer or from nothing: typing in
+    // another field (search, a dialog, a form) must never land on the card.
+    function grab() {
+        if ApprovalsState.grab-focus && (ComposerState.input-focused || !TextInputInterface.text-input-focused) {
+            fs.focus();
+        }
+    }
+
+    init => {
+        root.grab();
+    }
+    changed serial => {
+        root.grab();
+    }
+
+    // Sits behind the content: clicks on non-interactive parts focus the card.
+    fs := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-gained(reason) => {
+            ApprovalsState.card-focused = true;
+            if reason == FocusReason.window-activation {
+                // Back from another window: the next key may not be meant
+                // for the card.
+                ApprovalsState.rearm();
+            }
+        }
+        focus-lost => {
+            ApprovalsState.card-focused = false;
+        }
+        key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.meta || event.modifiers.alt {
+                return EventResult.reject;
+            }
+            if ApprovalsState.kind == ApprovalCardKind.choices {
+                if event.text == Key.UpArrow {
+                    ApprovalsState.highlighted = max(0, ApprovalsState.highlighted - 1);
+                    return EventResult.accept;
+                }
+                if event.text == Key.DownArrow {
+                    ApprovalsState.highlighted = min(ApprovalsState.options.length - 1, ApprovalsState.highlighted + 1);
+                    return EventResult.accept;
+                }
+            }
+            // Enter (choose or submit), letters, digits and Esc are decided
+            // in Rust, which ignores them right after the card changed. Space
+            // never answers: it is too easy to type into the card by accident.
+            ApprovalsState.key(event.text) ? EventResult.accept : EventResult.reject
+        }
+    }
+
+    body := VerticalLayout {
+        padding: Theme.pad-l;
+        spacing: Theme.pad-m;
+
+        // Header: status dot, title, origin and queue position.
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+            vertical-stretch: 0;
+
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.warning;
+                }
+            }
+            Text {
+                text: ApprovalsState.title;
+                color: Theme.text;
+                font-size: Theme.font-size-large;
+                font-weight: 600;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if !root.compact: ApprovalBadges { }
+        }
+
+        if root.compact && (ApprovalsState.origin != "" || ApprovalsState.position != ""): HorizontalLayout {
+            vertical-stretch: 0;
+            alignment: start;
+            ApprovalBadges { }
+        }
+
+        if ApprovalsState.reason != "": Text {
+            text: ApprovalsState.reason;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+            vertical-stretch: 0;
+        }
+
+        if ApprovalsState.code != "": Rectangle {
+            vertical-stretch: 1;
+            min-height: min(code-layout.preferred-height + 2px, 44px);
+            preferred-height: min(code-layout.preferred-height + 2px, 150px);
+            max-height: min(code-layout.preferred-height + 2px, 150px);
+            background: Theme.surface-sunken;
+            border-radius: Theme.radius-small;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            ScrollView {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: parent.height - 2px;
+                code-layout := VerticalLayout {
+                    padding-left: Theme.pad-m;
+                    padding-right: Theme.pad-m;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    TextInput {
+                        text: ApprovalsState.code;
+                        read-only: true;
+                        single-line: false;
+                        wrap: word-wrap;
+                        font-family: Theme.mono-font;
+                        color: Theme.text;
+                        selection-background-color: Theme.selected;
+                        selection-foreground-color: Theme.text;
+                    }
+                }
+            }
+        }
+
+        if ApprovalsState.code-caption != "": HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.pad-m;
+            Text {
+                text: ApprovalsState.code-caption;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if ApprovalsState.code != "": LinkButton {
+                text: "Copy";
+                text-color: Theme.text-muted;
+                clicked => {
+                    ApprovalsState.copy-code();
+                }
+            }
+        }
+
+        for detail in ApprovalsState.details: StyledText {
+            text: detail;
+            default-color: Theme.text;
+            default-font-size: Theme.font-size-small;
+            link-color: Theme.accent;
+            vertical-stretch: 0;
+        }
+
+        if ApprovalsState.diff.length > 0: Rectangle {
+            vertical-stretch: 1;
+            min-height: min(diff-layout.preferred-height + 2px, 60px);
+            preferred-height: min(diff-layout.preferred-height + 2px, 240px);
+            max-height: min(diff-layout.preferred-height + 2px, 240px);
+            background: Theme.surface-sunken;
+            border-radius: Theme.radius-small;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            ScrollView {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: parent.height - 2px;
+                diff-layout := VerticalLayout {
+                    padding-top: 3px;
+                    padding-bottom: 3px;
+                    for line in ApprovalsState.diff: DiffRow {
+                        line: line;
+                    }
+                }
+            }
+        }
+
+        if ApprovalsState.link != "": HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.pad-m;
+            Text {
+                text: ApprovalsState.link;
+                color: Theme.accent;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            LinkButton {
+                text: "Open";
+                clicked => {
+                    ApprovalsState.open-link();
+                }
+            }
+        }
+
+        if ApprovalsState.kind == ApprovalCardKind.choices: VerticalLayout {
+            vertical-stretch: 0;
+            spacing: 2px;
+            for option[index] in ApprovalsState.options: OptionRow {
+                option: option;
+                highlighted: index == ApprovalsState.highlighted;
+                activate => {
+                    fs.focus();
+                    ApprovalsState.highlighted = index;
+                    ApprovalsState.choose(index);
+                }
+            }
+        }
+
+        if ApprovalsState.kind == ApprovalCardKind.form: ScrollView {
+            vertical-stretch: 1;
+            min-height: min(fields-layout.preferred-height, 72px);
+            preferred-height: min(fields-layout.preferred-height, 300px);
+            max-height: min(fields-layout.preferred-height, 300px);
+            fields-layout := VerticalLayout {
+                padding-right: 10px;
+                spacing: Theme.pad-l;
+                for field[index] in ApprovalsState.fields: FieldView {
+                    field: field;
+                    index: index;
+                }
+            }
+        }
+
+        if ApprovalsState.kind == ApprovalCardKind.form: HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.pad-m;
+            Text {
+                text: ApprovalsState.form-error != "" ? ApprovalsState.form-error : ApprovalsState.hint;
+                color: ApprovalsState.form-error != "" ? Theme.danger : Theme.text-faint;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if ApprovalsState.tertiary-label != "": FlatButton {
+                text: ApprovalsState.tertiary-label;
+                clicked => {
+                    ApprovalsState.tertiary();
+                }
+            }
+            if ApprovalsState.secondary-label != "": FlatButton {
+                text: ApprovalsState.secondary-label;
+                clicked => {
+                    ApprovalsState.secondary();
+                }
+            }
+            FlatButton {
+                text: ApprovalsState.submit-label;
+                primary: true;
+                clicked => {
+                    ApprovalsState.submit();
+                }
+            }
+        }
+
+        if ApprovalsState.kind == ApprovalCardKind.choices && ApprovalsState.hint != "": Text {
+            vertical-stretch: 0;
+            text: root.focused ? ApprovalsState.hint : "Click the card to answer with the keyboard";
+            color: Theme.text-faint;
+            font-size: Theme.font-size-small;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// Shown between the transcript and the composer. Takes no space when nothing
+// is pending on the active tab.
+export component ApprovalsView inherits VerticalLayout {
+    vertical-stretch: 0;
+    padding-left: Theme.pad-xl;
+    padding-right: Theme.pad-xl;
+    padding-top: ApprovalsState.pending-count > 0 ? Theme.pad-s : 0px;
+    padding-bottom: ApprovalsState.pending-count > 0 ? Theme.pad-m : 0px;
+
+    if ApprovalsState.pending-count > 0: ApprovalCard { }
+}

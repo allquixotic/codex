@@ -1,0 +1,646 @@
+// Building blocks shared by the settings pages: page header, banners, the
+// config field row, the generic list row, and key/value lists.
+//
+// OWNER: settings feature.
+
+import { Switch, ComboBox, LineEdit, TextEdit } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton, Badge } from "theme.slint";
+import { FieldData, ItemRow, KeyValue } from "settings_state.slint";
+
+export global SettingsMetrics {
+    // Widest content column; wider panes center it.
+    out property <length> content-width: 860px;
+    out property <length> control-width: 240px;
+
+    // Side padding that centers a column of at most `content-width`.
+    public pure function side(available: length) -> length {
+        max(Theme.pad-xl, (available - content-width) / 2)
+    }
+}
+
+// Title, subtitle, and optional right-aligned actions (children).
+export component PageHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <length> side-padding: Theme.pad-xl;
+
+    VerticalLayout {
+        padding-left: root.side-padding;
+        padding-right: root.side-padding;
+        padding-top: Theme.pad-xl;
+        padding-bottom: Theme.pad-m;
+        spacing: Theme.pad-s;
+
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-size-title;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: Theme.pad-m;
+                alignment: end;
+                @children
+            }
+        }
+        if root.subtitle != "": Text {
+            text: root.subtitle;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// Colored message strip. tone: 0 info, 1 success, 2 warning, 3 danger.
+export component Banner inherits Rectangle {
+    in property <string> text;
+    in property <int> tone: 0;
+    in property <string> action;
+    callback activated();
+
+    background: tone == 3 ? Theme.danger-soft
+        : tone == 2 ? Theme.warning-soft
+        : tone == 1 ? Theme.success-soft
+        : Theme.accent-soft;
+    border-radius: Theme.radius;
+
+    HorizontalLayout {
+        padding: Theme.pad-m;
+        padding-left: Theme.pad-l;
+        spacing: Theme.pad-m;
+        Text {
+            text: root.text;
+            color: root.tone == 3 ? Theme.danger
+                : root.tone == 2 ? Theme.warning
+                : root.tone == 1 ? Theme.success
+                : Theme.text;
+            wrap: word-wrap;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.action != "": VerticalLayout {
+            alignment: center;
+            FlatButton {
+                text: root.action;
+                clicked => {
+                    root.activated();
+                }
+            }
+        }
+    }
+}
+
+// Pill colored by tone: 0 neutral, 1 success, 2 warning, 3 danger, 4 accent.
+export component ToneBadge inherits Badge {
+    in property <int> tone;
+    fg: tone == 1 ? Theme.success
+        : tone == 2 ? Theme.warning
+        : tone == 3 ? Theme.danger
+        : tone == 4 ? Theme.accent
+        : Theme.text-muted;
+    bg: tone == 1 ? Theme.success-soft
+        : tone == 2 ? Theme.warning-soft
+        : tone == 3 ? Theme.danger-soft
+        : tone == 4 ? Theme.accent-soft
+        : Theme.surface-alt;
+}
+
+// Section title inside a page.
+export component SectionTitle inherits VerticalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    padding-top: Theme.pad-l;
+    padding-bottom: Theme.pad-s;
+    spacing: 2px;
+    Text {
+        text: root.title;
+        color: Theme.text;
+        font-size: Theme.font-size-large;
+        font-weight: 600;
+    }
+    if root.subtitle != "": Text {
+        text: root.subtitle;
+        color: Theme.text-muted;
+        font-size: Theme.font-size-small;
+        wrap: word-wrap;
+    }
+}
+
+// Flat card used for every row.
+export component Card inherits Rectangle {
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: Theme.radius;
+}
+
+// One key/value pair. Children are placed explicitly: Slint under-measures
+// wrapped text in repeated layout rows inside scroll views, so the row
+// height is computed from the texts' own preferred heights instead.
+component KeyValueRow inherits Rectangle {
+    in property <KeyValue> item;
+    in property <length> key-width;
+    property <length> gap: Theme.pad-l;
+    property <length> key-column: min(root.key-width, root.width * 0.4);
+    height: max(key-text.preferred-height, value-text.preferred-height);
+
+    key-text := Text {
+        x: 0;
+        y: 0;
+        width: root.key-column;
+        text: root.item.key;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+    value-text := TextInput {
+        x: root.key-column + root.gap;
+        y: 0;
+        width: max(0px, root.width - root.key-column - root.gap);
+        text: root.item.value;
+        read-only: true;
+        single-line: false;
+        wrap: word-wrap;
+        color: Theme.text;
+        font-family: root.item.mono ? Theme.mono-font : Theme.ui-font;
+    }
+}
+
+// Key/value pairs in two columns; values are selectable.
+export component KeyValueList inherits VerticalLayout {
+    in property <[KeyValue]> items;
+    in property <length> key-width: 180px;
+    in property <string> empty-text: "Nothing to show.";
+    spacing: Theme.pad-s;
+
+    if root.items.length == 0: Text {
+        text: root.empty-text;
+        color: Theme.text-faint;
+        wrap: word-wrap;
+    }
+    for item in root.items: KeyValueRow {
+        item: item;
+        key-width: root.key-width;
+    }
+}
+
+// Switch whose state follows `value` whenever Rust republishes the row
+// (`revision`) or the row is reused for another key.
+component SyncedSwitch inherits Switch {
+    in property <bool> value;
+    in property <int> revision;
+    in property <string> key;
+    changed revision => {
+        self.checked = self.value;
+    }
+    changed key => {
+        self.checked = self.value;
+    }
+    changed value => {
+        self.checked = self.value;
+    }
+    init => {
+        self.checked = self.value;
+    }
+}
+
+// ComboBox whose selection follows `value` like `SyncedSwitch`.
+component SyncedComboBox inherits ComboBox {
+    in property <int> value;
+    in property <int> revision;
+    in property <string> key;
+    changed revision => {
+        self.current-index = self.value;
+    }
+    changed key => {
+        self.current-index = self.value;
+    }
+    changed value => {
+        self.current-index = self.value;
+    }
+    init => {
+        self.current-index = self.value;
+    }
+}
+
+// Single-line editor with an explicit Save button.
+component TextField inherits HorizontalLayout {
+    in property <string> value;
+    in property <int> revision;
+    in property <string> key;
+    in property <string> placeholder;
+    in property <bool> editable;
+    in property <bool> numeric;
+    callback apply(string);
+
+    spacing: Theme.pad-m;
+    changed revision => {
+        line.text = root.value;
+    }
+    changed key => {
+        line.text = root.value;
+    }
+    changed value => {
+        line.text = root.value;
+    }
+    init => {
+        line.text = root.value;
+    }
+
+    line := LineEdit {
+        horizontal-stretch: 1;
+        placeholder-text: root.placeholder;
+        enabled: root.editable;
+        input-type: root.numeric ? InputType.decimal : InputType.text;
+        accepted(text) => {
+            root.apply(text);
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        FlatButton {
+            text: "Save";
+            enabled: root.editable && line.text != root.value;
+            primary: root.editable && line.text != root.value;
+            clicked => {
+                root.apply(line.text);
+            }
+        }
+    }
+}
+
+// Multi-line TOML editor for one key with Revert and Save.
+component SnippetEditor inherits VerticalLayout {
+    in property <string> value;
+    in property <int> revision;
+    in property <string> key;
+    in property <string> placeholder;
+    in property <bool> editable;
+    callback apply(string);
+
+    spacing: Theme.pad-s;
+    changed revision => {
+        editor.text = root.value;
+    }
+    changed key => {
+        editor.text = root.value;
+    }
+    init => {
+        editor.text = root.value;
+    }
+
+    editor := TextEdit {
+        height: 180px;
+        read-only: !root.editable;
+        font-family: Theme.mono-font;
+        wrap: no-wrap;
+        placeholder-text: root.placeholder;
+    }
+    if root.editable: HorizontalLayout {
+        spacing: Theme.pad-m;
+        Text {
+            text: "Leave empty to remove the key.";
+            color: Theme.text-faint;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        FlatButton {
+            text: "Revert";
+            enabled: editor.text != root.value;
+            clicked => {
+                editor.text = root.value;
+            }
+        }
+        FlatButton {
+            text: "Save";
+            primary: true;
+            clicked => {
+                root.apply(editor.text);
+            }
+        }
+    }
+}
+
+// One config setting: title, origin, control, description, and (for TOML
+// snippets) an inline editor. Section headers (kind 0) reuse the same
+// structure without the card chrome.
+//
+// Wrapped text must not sit inside an `if` that also wraps the card: Slint
+// then measures it unwrapped and the ListView row comes out too short.
+export component FieldRowView inherits VerticalLayout {
+    in property <FieldData> field;
+    in property <length> side-padding: Theme.pad-xl;
+    callback toggled(bool);
+    callback selected(int);
+    callback apply(string);
+    callback reset();
+    callback expand(bool);
+
+    property <bool> header: field.kind == 0;
+    property <bool> editable: !field.locked && !field.busy;
+    property <bool> text-kind: field.kind == 3 || field.kind == 4 || field.kind == 5;
+
+    padding-left: root.side-padding;
+    padding-right: root.side-padding;
+    padding-top: root.header ? Theme.pad-xl : 0px;
+    padding-bottom: Theme.pad-m;
+
+    Card {
+        background: root.header ? transparent : Theme.surface;
+        border-width: root.header ? 0px : 1px;
+
+        VerticalLayout {
+            padding: root.header ? 0px : Theme.pad-l;
+            spacing: root.header ? 2px : Theme.pad-s;
+
+            if root.header: Text {
+                text: root.field.title;
+                color: Theme.text;
+                font-size: Theme.font-size-large;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            if !root.header: HorizontalLayout {
+                spacing: Theme.pad-l;
+
+                // Title on top; origin badge and key path below, so narrow
+                // panes elide the path rather than the title.
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 3px;
+                    Text {
+                        text: root.field.title;
+                        color: Theme.text;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.pad-m;
+                        ToneBadge {
+                            text: root.field.origin;
+                            tone: root.field.origin-tone == 1 ? 4 : root.field.origin-tone == 3 ? 2 : 0;
+                        }
+                        if root.field.path != "": Text {
+                            text: root.field.path;
+                            color: Theme.text-faint;
+                            font-family: Theme.mono-font;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+
+                if root.field.can-reset && !root.field.locked && !root.field.busy: VerticalLayout {
+                    alignment: center;
+                    LinkButton {
+                        text: "Reset";
+                        text-color: Theme.text-muted;
+                        clicked => {
+                            root.reset();
+                        }
+                    }
+                }
+                if root.field.busy: Text {
+                    text: "Saving…";
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+
+                if root.field.kind == 1: VerticalLayout {
+                    alignment: center;
+                    SyncedSwitch {
+                        value: root.field.checked;
+                        revision: root.field.revision;
+                        key: root.field.key;
+                        enabled: root.editable;
+                        toggled => {
+                            root.toggled(self.checked);
+                        }
+                    }
+                }
+                if root.field.kind == 2: VerticalLayout {
+                    alignment: center;
+                    SyncedComboBox {
+                        width: min(SettingsMetrics.control-width, root.width * 0.45);
+                        model: root.field.options;
+                        value: root.field.option-index;
+                        revision: root.field.revision;
+                        key: root.field.key;
+                        enabled: root.editable;
+                        selected => {
+                            root.selected(self.current-index);
+                        }
+                    }
+                }
+                if root.text-kind: VerticalLayout {
+                    alignment: center;
+                    TextField {
+                        width: min(SettingsMetrics.control-width + 64px, root.width * 0.5);
+                        value: root.field.text;
+                        revision: root.field.revision;
+                        key: root.field.key;
+                        placeholder: root.field.placeholder;
+                        editable: root.editable;
+                        numeric: root.field.kind != 3;
+                        apply(text) => {
+                            root.apply(text);
+                        }
+                    }
+                }
+                if root.field.kind == 6: HorizontalLayout {
+                    spacing: Theme.pad-m;
+                    width: min(SettingsMetrics.control-width + 64px, root.width * 0.5);
+                    Text {
+                        text: root.field.summary;
+                        color: Theme.text-muted;
+                        font-family: Theme.mono-font;
+                        font-size: Theme.font-size-small;
+                        overflow: elide;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        FlatButton {
+                            text: root.field.expanded ? "Close" : root.field.locked ? "View" : "Edit";
+                            checked: root.field.expanded;
+                            clicked => {
+                                root.expand(!root.field.expanded);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.field.description != "": Text {
+                text: root.field.description;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+            if root.field.note != "": Text {
+                text: root.field.note;
+                color: Theme.accent;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+            if root.field.lock-reason != "": Text {
+                text: root.field.lock-reason;
+                color: Theme.warning;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+            if root.field.origin-detail != "": Text {
+                text: root.field.origin-detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+            if root.field.kind == 6 && root.field.expanded: SnippetEditor {
+                value: root.field.text;
+                revision: root.field.revision;
+                key: root.field.key;
+                placeholder: root.field.placeholder;
+                editable: root.editable;
+                apply(text) => {
+                    root.apply(text);
+                }
+            }
+            if root.field.error != "": Text {
+                text: root.field.error;
+                color: Theme.danger;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// One entry of a list page. Section headers (kind 1) reuse the structure
+// without the card chrome; see `FieldRowView` about wrapped text.
+export component ItemRowView inherits VerticalLayout {
+    in property <ItemRow> item;
+    in property <length> side-padding: Theme.pad-xl;
+    callback toggled(bool);
+    callback action(string);
+
+    property <bool> header: item.kind == 1;
+
+    padding-left: root.side-padding;
+    padding-right: root.side-padding;
+    padding-top: root.header ? Theme.pad-l : 0px;
+    padding-bottom: Theme.pad-m;
+
+    Card {
+        background: root.header ? transparent : Theme.surface;
+        border-width: root.header ? 0px : 1px;
+
+        VerticalLayout {
+            padding: root.header ? 0px : Theme.pad-l;
+            spacing: root.header ? 2px : 3px;
+
+            HorizontalLayout {
+                spacing: Theme.pad-m;
+
+                Text {
+                    text: root.item.title;
+                    color: Theme.text;
+                    font-size: root.header ? Theme.font-size-large : Theme.font-size;
+                    font-weight: 600;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if root.item.status != "": ToneBadge {
+                    text: root.item.status;
+                    tone: root.item.status-tone;
+                    y: (parent.height - self.height) / 2;
+                }
+                if root.item.tag != "": ToneBadge {
+                    text: root.item.tag;
+                    tone: 0;
+                    y: (parent.height - self.height) / 2;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                if root.item.busy: Text {
+                    text: "Working…";
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                if root.item.secondary != "": VerticalLayout {
+                    alignment: center;
+                    FlatButton {
+                        text: root.item.secondary;
+                        danger: root.item.secondary-danger;
+                        enabled: !root.item.busy;
+                        clicked => {
+                            root.action(root.item.secondary-id);
+                        }
+                    }
+                }
+                if root.item.action != "": VerticalLayout {
+                    alignment: center;
+                    FlatButton {
+                        text: root.item.action;
+                        primary: true;
+                        enabled: !root.item.busy;
+                        clicked => {
+                            root.action(root.item.action-id);
+                        }
+                    }
+                }
+                if root.item.has-toggle: VerticalLayout {
+                    alignment: center;
+                    SyncedSwitch {
+                        value: root.item.toggle-on;
+                        revision: root.item.revision;
+                        key: root.item.id;
+                        enabled: root.item.toggle-enabled && !root.item.busy;
+                        toggled => {
+                            root.toggled(self.checked);
+                        }
+                    }
+                }
+            }
+            if root.item.subtitle != "": Text {
+                text: root.item.subtitle;
+                color: Theme.text-faint;
+                font-family: Theme.mono-font;
+                font-size: Theme.font-size-small;
+                overflow: elide;
+            }
+            if root.item.description != "": Text {
+                text: root.item.description;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+            if root.item.detail != "": Text {
+                text: root.item.detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+            if root.item.error != "": Text {
+                text: root.item.error;
+                color: Theme.danger;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

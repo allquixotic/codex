@@ -1,0 +1,1135 @@
+// Main window: tab strip, sidebar, active tab content, info pane, and the
+// shared modal dialog, toast, and status overlays.
+//
+// Feature views talk to Rust through their own globals; this file only places
+// them. Every global used from Rust must be re-exported here.
+
+import { LineEdit, ListView, Palette, AboutSlint } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton, Badge, Divider } from "theme.slint";
+import { TranscriptView, TranscriptState, BlockData } from "transcript.slint";
+import { ComposerView, ComposerState } from "composer.slint";
+import { ApprovalsView, ApprovalsState } from "approvals.slint";
+import { SettingsView, SettingsState } from "settings.slint";
+import { BedrockState } from "bedrock.slint";
+import { FileView, FilesState } from "files.slint";
+import { Sidebar, SidebarState } from "sidebar.slint";
+import { InfoPane, InfoState } from "info.slint";
+import { NewTabView, NewTabState, PickerOverlay, PickerState, PickerItem } from "newtab.slint";
+import { XtabOverlay, XtabState } from "xtab.slint";
+
+export {
+    Theme,
+    TranscriptState,
+    BlockData,
+    ComposerState,
+    ApprovalsState,
+    SettingsState,
+    BedrockState,
+    FilesState,
+    SidebarState,
+    InfoState,
+    NewTabState,
+    PickerState,
+    PickerItem,
+    XtabState,
+}
+export { FieldData, ItemRow, KeyValue, ShortcutRow } from "settings.slint";
+
+// Tab kinds, mirrored by `TabKindCode` in src/app.rs.
+export enum TabKindCode { thread, file, settings, new-tab }
+
+// Thread status glyphs, mirrored by `TabStatusCode` in src/app.rs.
+export enum TabStatusCode { idle, starting, running, waiting, error, closed }
+
+export struct TabInfo {
+    id: int,
+    kind: TabKindCode,
+    title: string,
+    tooltip: string,
+    status: TabStatusCode,
+    unread: bool,
+}
+
+// Generic modal: message, optional single-line input, two buttons.
+export struct DialogData {
+    id: string,
+    title: string,
+    message: string,
+    input-visible: bool,
+    input-text: string,
+    input-placeholder: string,
+    accept-label: string,
+    cancel-label: string,
+    destructive: bool,
+}
+
+export global AppState {
+    in property <[TabInfo]> tabs;
+    in property <int> active-tab: -1;
+    in property <TabKindCode> active-kind: TabKindCode.new-tab;
+    in property <bool> has-active-tab: false;
+    // "starting" | "ready" | "failed" | "restarting"
+    in property <string> server-status: "starting";
+    in property <string> server-message;
+    // The failed server is a daemon or remote one (or the saved connection
+    // cannot be used): the status overlay offers the embedded server.
+    in property <bool> server-can-use-embedded;
+    in property <[string]> warnings;
+    in property <string> toast;
+    in property <string> window-title: "Codex";
+    // Docked panes (saved preferences).
+    in-out property <bool> sidebar-visible: true;
+    in-out property <bool> info-visible: true;
+    // Whether each pane fits docked in the current window (set by
+    // MainWindow); when it does not, its toggle opens a drawer instead.
+    in-out property <bool> sidebar-fits: true;
+    in-out property <bool> info-fits: true;
+    in-out property <bool> sidebar-drawer-open: false;
+    in-out property <bool> info-drawer-open: false;
+    in property <bool> dialog-open;
+    in property <DialogData> dialog;
+    in-out property <string> dialog-input;
+
+    callback select-tab(int);
+    callback close-tab(int);
+    callback new-tab();
+    callback move-tab(int, int);
+    // Actions from the tab context menu, identified by name.
+    callback tab-action(int, string);
+    callback open-settings();
+    callback dismiss-warning(int);
+    callback retry-server();
+    callback use-embedded-server();
+    callback dialog-finished(bool);
+    callback toggle-sidebar();
+    callback toggle-info();
+    callback menu-action(string);
+    // A modal overlay closed; Rust returns focus to the composer.
+    callback overlay-closed();
+    in-out property <bool> about-open;
+    in property <string> version;
+    // Global keyboard shortcut by action name; return true when handled.
+    callback shortcut(string) -> bool;
+    // Raw key press (text, primary, shift, alt, secondary); true = consumed.
+    callback key-pressed(string, bool, bool, bool, bool) -> bool;
+}
+
+// Narrowest tab before the strip scrolls instead of shrinking tabs further.
+global TabMetrics {
+    out property <length> min-width: 84px;
+}
+
+component TabButton inherits Rectangle {
+    in property <TabInfo> info;
+    in property <bool> selected;
+    // Being dragged to another position.
+    in property <bool> dragged;
+    callback activate();
+    callback close();
+    callback action(string);
+    // Drag to reorder: pointer x within this tab while dragging, then the
+    // end (or cancellation) of the drag.
+    callback drag-moved(length);
+    callback drag-ended(bool);
+
+    // A drag starts once the pointer moved this far with the button down.
+    property <length> drag-threshold: 6px;
+    property <bool> dragging: false;
+    // The release that ends a drag must not also count as a click.
+    property <bool> drag-released: false;
+
+    height: Theme.tab-height;
+    min-width: TabMetrics.min-width;
+    preferred-width: 200px;
+    max-width: 240px;
+    background: selected || dragged ? Theme.surface : touch.has-hover ? Theme.hover : transparent;
+    border-radius: Theme.radius-small;
+    border-width: dragged ? 1px : 0px;
+    border-color: Theme.accent;
+
+    ContextMenuArea {
+        Menu {
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Rename…";
+                activated => { root.action("rename"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Fork";
+                activated => { root.action("fork"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Side chat";
+                activated => { root.action("side"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Continue in worktree";
+                activated => { root.action("worktree"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Recap conversation";
+                activated => { root.action("recap"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Compact context";
+                activated => { root.action("compact"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Review changes…";
+                activated => { root.action("review"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Create AGENTS.md";
+                activated => { root.action("init"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Export as Markdown…";
+                activated => { root.action("export"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "View as Text";
+                activated => { root.action("view-text"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Copy thread id";
+                activated => { root.action("copy-id"); }
+            }
+            if info.kind == TabKindCode.thread: MenuItem {
+                title: "Archive";
+                activated => { root.action("archive"); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Close other tabs";
+                activated => { root.action("close-others"); }
+            }
+            MenuItem {
+                title: "Close";
+                activated => { root.close(); }
+            }
+        }
+
+        touch := TouchArea {
+            mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.pointer;
+            clicked => {
+                if root.drag-released {
+                    root.drag-released = false;
+                } else {
+                    root.activate();
+                }
+            }
+            moved => {
+                if self.pressed && !root.dragging
+                    && abs(self.mouse-x - self.pressed-x) > root.drag-threshold {
+                    root.dragging = true;
+                    root.activate();
+                }
+                if root.dragging {
+                    root.drag-moved(self.mouse-x);
+                }
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.drag-released = false;
+                }
+                if event.button == PointerEventButton.middle && event.kind == PointerEventKind.up {
+                    root.close();
+                }
+                if root.dragging && event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                    root.dragging = false;
+                    root.drag-released = true;
+                    root.drag-ended(true);
+                }
+                if root.dragging && event.kind == PointerEventKind.cancel {
+                    root.dragging = false;
+                    root.drag-ended(false);
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.pad-m;
+        padding-right: Theme.pad-xs;
+        spacing: Theme.pad-s;
+
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: info.status == TabStatusCode.running ? Theme.accent
+                : info.status == TabStatusCode.waiting ? Theme.warning
+                : info.status == TabStatusCode.error ? Theme.danger
+                : info.status == TabStatusCode.starting ? Theme.text-faint
+                : info.unread ? Theme.success
+                : transparent;
+            border-width: info.status == TabStatusCode.idle && !info.unread ? 1px : 0px;
+            border-color: info.kind == TabKindCode.thread ? Theme.border-strong : transparent;
+        }
+
+        Text {
+            text: info.title;
+            color: selected ? Theme.text : Theme.text-muted;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        close-button := Rectangle {
+            width: 20px;
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-small;
+            background: close-touch.has-hover ? Theme.hover : transparent;
+            Text {
+                text: "×";
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            close-touch := TouchArea {
+                clicked => { root.close(); }
+            }
+        }
+    }
+}
+
+// Drawn with paths so it does not depend on font glyph coverage.
+component SidebarToggle inherits Rectangle {
+    callback clicked();
+    width: 28px;
+    border-radius: Theme.radius-small;
+    background: touch.has-hover ? Theme.hover : transparent;
+
+    Path {
+        width: 16px;
+        height: 16px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M 2.5 3.5 L 13.5 3.5 L 13.5 12.5 L 2.5 12.5 Z M 6.5 3.5 L 6.5 12.5";
+        stroke: (AppState.sidebar-visible && AppState.sidebar-fits) || AppState.sidebar-drawer-open ? Theme.text : Theme.text-muted;
+        stroke-width: 1.3px;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Lists every tab when the strip overflows.
+component TabListButton inherits Rectangle {
+    callback clicked();
+    width: 28px;
+    border-radius: Theme.radius-small;
+    background: touch.has-hover ? Theme.hover : transparent;
+
+    Path {
+        width: 12px;
+        height: 12px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 2.5 4.5 L 6 8 L 9.5 4.5";
+        stroke: Theme.text-muted;
+        stroke-width: 1.4px;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component TabListRow inherits Rectangle {
+    in property <TabInfo> info;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 28px;
+    border-radius: Theme.radius-small;
+    background: selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+
+    HorizontalLayout {
+        padding-left: Theme.pad-m;
+        padding-right: Theme.pad-m;
+        spacing: Theme.pad-s;
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: info.status == TabStatusCode.running ? Theme.accent
+                : info.status == TabStatusCode.waiting ? Theme.warning
+                : info.status == TabStatusCode.error ? Theme.danger
+                : info.status == TabStatusCode.starting ? Theme.text-faint
+                : info.unread ? Theme.success
+                : transparent;
+            border-width: info.status == TabStatusCode.idle && !info.unread ? 1px : 0px;
+            border-color: info.kind == TabKindCode.thread ? Theme.border-strong : transparent;
+        }
+        Text {
+            text: info.title;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Tabs shrink to `TabMetrics.min-width`, then scroll (wheel or trackpad)
+// and a list button shows every tab; the toggle, "+", Info and Settings
+// never scroll away. Tabs can be dragged to reorder them.
+component TabStrip inherits Rectangle {
+    background: Theme.surface-sunken;
+    height: Theme.tab-height + 2 * Theme.pad-xs;
+
+    property <length> spacing: Theme.pad-xs;
+    // Room at the end of the scrolled tabs for the tab-list button, which
+    // floats over the strip's right edge.
+    property <length> list-button-room: 32px;
+    // Derived from the tabs' minimum widths only, so it cannot feed back
+    // into the strip layout.
+    property <bool> overflowing: tabs-row.min-width > flick.width + 1px;
+    // Tab being dragged (-1 when none) and the slot it would drop into.
+    property <int> drag-from: -1;
+    property <int> drag-to: -1;
+    property <length> drag-tab-width;
+
+    // Width of each tab: the row gives every tab the same constraints.
+    property <length> tab-width: AppState.tabs.length == 0 ? 0px
+        : root.overflowing ? TabMetrics.min-width
+        : max(TabMetrics.min-width, min(240px,
+            (flick.width - (AppState.tabs.length - 1) * root.spacing) / AppState.tabs.length));
+
+    // Scrolls the active tab into view (and keeps the scroll position in
+    // range after the strip was resized).
+    function reveal-active() {
+        if !root.overflowing {
+            return;
+        }
+        if AppState.active-tab >= 0 {
+            let left = AppState.active-tab * (root.tab-width + root.spacing);
+            let right = left + root.tab-width;
+            if left + flick.content-x < 0px {
+                flick.content-x = -left;
+            } else if right + flick.content-x > flick.width - root.list-button-room {
+                flick.content-x = flick.width - root.list-button-room - right;
+            }
+        }
+        flick.content-x = max(flick.width - flick.content-width, min(0px, flick.content-x));
+    }
+
+    changed width => {
+        root.reveal-active();
+    }
+
+    property <int> active: AppState.active-tab;
+    changed active => {
+        root.reveal-active();
+    }
+    property <int> count: AppState.tabs.length;
+    changed count => {
+        root.reveal-active();
+    }
+    property <bool> overflow-watch: root.overflowing;
+    changed overflow-watch => {
+        if !root.overflowing {
+            flick.content-x = 0px;
+        }
+        root.reveal-active();
+    }
+
+    HorizontalLayout {
+        padding: Theme.pad-xs;
+        spacing: root.spacing;
+
+        SidebarToggle {
+            clicked => { AppState.toggle-sidebar(); }
+        }
+
+        tab-area := TouchArea {
+            // As wide as the tabs want; shrinks (to zero) before the fixed
+            // buttons do, and leaves extra room to the spacer below.
+            min-width: 0px;
+            preferred-width: tabs-row.preferred-width;
+            max-width: tabs-row.preferred-width;
+            horizontal-stretch: 1;
+
+            // A mouse wheel scrolls the strip sideways; trackpads scroll
+            // the Flickable directly.
+            scroll-event(event) => {
+                if !root.overflowing || event.delta-y == 0px || event.delta-x != 0px {
+                    return reject;
+                }
+                flick.content-x = max(flick.width - flick.content-width,
+                    min(0px, flick.content-x + event.delta-y));
+                accept
+            }
+
+            flick := Flickable {
+                width: parent.width;
+                height: parent.height;
+                content-width: root.overflowing ? tabs-row.min-width + root.list-button-room : self.width;
+                content-height: self.height;
+                interactive: false;
+
+                tabs-row := HorizontalLayout {
+                    // Explicit x: a sized child is centered by default.
+                    x: 0px;
+                    y: 0px;
+                    width: root.overflowing ? self.min-width : flick.width;
+                    height: flick.height;
+                    alignment: start;
+                    spacing: root.spacing;
+
+                    for tab[index] in AppState.tabs: TabButton {
+                        info: tab;
+                        selected: index == AppState.active-tab;
+                        dragged: index == root.drag-from;
+                        activate => { AppState.select-tab(index); }
+                        close => { AppState.close-tab(index); }
+                        action(name) => { AppState.tab-action(index, name); }
+                        drag-moved(x) => {
+                            root.drag-from = index;
+                            root.drag-tab-width = self.width;
+                            root.drag-to = max(0, min(AppState.tabs.length - 1,
+                                floor((self.x + x) / (self.width + root.spacing))));
+                        }
+                        drag-ended(dropped) => {
+                            if dropped && root.drag-from >= 0 && root.drag-to >= 0 && root.drag-to != root.drag-from {
+                                AppState.move-tab(root.drag-from, root.drag-to);
+                            }
+                            root.drag-from = -1;
+                            root.drag-to = -1;
+                        }
+                    }
+                }
+
+                // Where the dragged tab will land.
+                if root.drag-from >= 0 && root.drag-to >= 0 && root.drag-to != root.drag-from: Rectangle {
+                    x: root.drag-to < root.drag-from
+                        ? root.drag-to * (root.drag-tab-width + root.spacing) - root.spacing / 2 - 1px
+                        : root.drag-to * (root.drag-tab-width + root.spacing) + root.drag-tab-width + root.spacing / 2 - 1px;
+                    y: Theme.pad-xs;
+                    width: 2px;
+                    height: flick.height - 2 * Theme.pad-xs;
+                    background: Theme.accent;
+                }
+            }
+
+            if root.overflowing: Rectangle {
+                x: parent.width - self.width;
+                width: root.list-button-room;
+                height: parent.height;
+                background: Theme.surface-sunken;
+
+                list-button := TabListButton {
+                    x: parent.width - self.width;
+                    height: parent.height;
+                    clicked => { tab-list.show(); }
+                }
+            }
+        }
+
+        LinkButton {
+            text: "+";
+            text-color: Theme.text;
+            width: 28px;
+            clicked => { AppState.new-tab(); }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+
+        LinkButton {
+            text: "Info";
+            text-color: (AppState.info-visible && AppState.info-fits) || AppState.info-drawer-open ? Theme.accent : Theme.text-muted;
+            clicked => { AppState.toggle-info(); }
+        }
+
+        LinkButton {
+            text: "Settings";
+            text-color: Theme.text-muted;
+            clicked => { AppState.open-settings(); }
+        }
+    }
+
+    tab-list := PopupWindow {
+        x: max(0px, min(root.width - self.width, tab-area.x + tab-area.width - self.width));
+        y: root.height;
+        width: min(320px, root.width - 2 * Theme.pad-m);
+        height: min(AppState.tabs.length * 28px, 420px) + 2 * Theme.pad-s;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+
+        Rectangle {
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            border-radius: Theme.radius;
+
+            ListView {
+                x: Theme.pad-s;
+                y: Theme.pad-s;
+                width: parent.width - 2 * Theme.pad-s;
+                height: parent.height - 2 * Theme.pad-s;
+                for tab[index] in AppState.tabs: TabListRow {
+                    info: tab;
+                    selected: index == AppState.active-tab;
+                    clicked => {
+                        AppState.select-tab(index);
+                        tab-list.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+component WarningsBanner inherits Rectangle {
+    background: Theme.warning-soft;
+    visible: AppState.warnings.length > 0;
+    height: AppState.warnings.length > 0 ? layout.preferred-height : 0px;
+
+    layout := VerticalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-l;
+        padding-top: Theme.pad-s;
+        padding-bottom: Theme.pad-s;
+        for warning[index] in AppState.warnings: HorizontalLayout {
+            spacing: Theme.pad-m;
+            Text {
+                text: warning;
+                color: Theme.warning;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            LinkButton {
+                text: "Dismiss";
+                text-color: Theme.warning;
+                clicked => { AppState.dismiss-warning(index); }
+            }
+        }
+    }
+}
+
+component ThreadPane inherits VerticalLayout {
+    TranscriptView {
+        vertical-stretch: 1;
+    }
+    ApprovalsView { }
+    ComposerView { }
+}
+
+component StatusOverlay inherits Rectangle {
+    background: Theme.window-bg.with-alpha(0.94);
+
+    TouchArea { }
+
+    VerticalLayout {
+        alignment: center;
+        spacing: Theme.pad-l;
+        padding: Theme.pad-xl;
+
+        Text {
+            text: AppState.server-status == "failed" ? "Codex could not start" : "Starting Codex…";
+            color: Theme.text;
+            font-size: Theme.font-size-title;
+            horizontal-alignment: center;
+        }
+        // Centered column for long messages (a sized child of the vertical
+        // layout would sit at its left edge).
+        HorizontalLayout {
+            alignment: center;
+            Text {
+                text: AppState.server-message;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                max-width: 640px;
+            }
+        }
+        if AppState.server-status == "failed": HorizontalLayout {
+            alignment: center;
+            spacing: Theme.pad-m;
+            FlatButton {
+                text: "Retry";
+                primary: true;
+                clicked => { AppState.retry-server(); }
+            }
+            if AppState.server-can-use-embedded: FlatButton {
+                text: "Use the embedded server";
+                clicked => { AppState.use-embedded-server(); }
+            }
+            FlatButton {
+                text: "Open settings";
+                clicked => { AppState.open-settings(); }
+            }
+        }
+    }
+}
+
+component Dialog inherits Rectangle {
+    background: #00000060;
+
+    TouchArea { }
+
+    // Takes keyboard focus so typing, Enter and Escape cannot reach the
+    // composer behind the dialog: Enter accepts, Escape cancels.
+    keys := FocusScope {
+        init => {
+            if !AppState.dialog.input-visible {
+                self.focus();
+            }
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if AppState.dialog.cancel-label != "" {
+                    AppState.dialog-finished(false);
+                }
+                return accept;
+            }
+            if event.text == Key.Return && !AppState.dialog.input-visible {
+                AppState.dialog-finished(true);
+                return accept;
+            }
+            // The text field handles its own keys; everything else stops here.
+            accept
+        }
+
+        Rectangle {
+            width: min(parent.width - 48px, 520px);
+            height: dialog-layout.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 3;
+            background: Theme.surface;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+
+            dialog-layout := VerticalLayout {
+                padding: Theme.pad-xl;
+                spacing: Theme.pad-l;
+
+                Text {
+                    text: AppState.dialog.title;
+                    color: Theme.text;
+                    font-size: Theme.font-size-large;
+                    font-weight: 600;
+                }
+                if AppState.dialog.message != "": Text {
+                    text: AppState.dialog.message;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+                if AppState.dialog.input-visible: dialog-edit := LineEdit {
+                    text <=> AppState.dialog-input;
+                    placeholder-text: AppState.dialog.input-placeholder;
+                    accepted => { AppState.dialog-finished(true); }
+                    init => { self.focus(); }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: Theme.pad-m;
+                    if AppState.dialog.cancel-label != "": FlatButton {
+                        text: AppState.dialog.cancel-label;
+                        clicked => { AppState.dialog-finished(false); }
+                    }
+                    FlatButton {
+                        text: AppState.dialog.accept-label;
+                        primary: !AppState.dialog.destructive;
+                        danger: AppState.dialog.destructive;
+                        clicked => { AppState.dialog-finished(true); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component AboutOverlay inherits Rectangle {
+    background: #00000060;
+
+    function close() {
+        AppState.about-open = false;
+        AppState.overlay-closed();
+    }
+
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    // Holds keyboard focus while open: Escape or Enter closes, and no key
+    // reaches the composer or the global shortcuts behind the overlay.
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape || event.text == Key.Return {
+                root.close();
+            }
+            accept
+        }
+
+        Rectangle {
+            width: min(420px, parent.width - 48px);
+            height: about-layout.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 3;
+            background: Theme.surface;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            TouchArea { }
+            about-layout := VerticalLayout {
+                padding: Theme.pad-xl;
+                spacing: Theme.pad-l;
+                Text {
+                    text: "Codex";
+                    color: Theme.text;
+                    font-size: Theme.font-size-title;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Version " + AppState.version;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                }
+                AboutSlint {
+                    min-height: 120px;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    FlatButton {
+                        text: "Close";
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A side pane shown over the content of a narrow window.
+component Drawer inherits Rectangle {
+    in property <bool> from-right;
+    in property <length> pane-width;
+    callback dismissed();
+
+    background: #00000040;
+
+    TouchArea {
+        clicked => { root.dismissed(); }
+    }
+
+    Rectangle {
+        x: root.from-right ? parent.width - self.width : 0px;
+        width: min(root.pane-width, parent.width - 48px);
+        height: parent.height;
+        background: Theme.window-bg;
+        // Clicks inside the pane must not dismiss it.
+        TouchArea { }
+        @children
+    }
+}
+
+export component MainWindow inherits Window {
+    title: AppState.window-title;
+    // Set from Rust (the PNG is embedded by `include_bytes!`, which works
+    // the same under Cargo and Bazel).
+    in property <image> app-icon;
+    icon: root.app-icon;
+    preferred-width: 1280px;
+    preferred-height: 820px;
+    min-width: 640px;
+    min-height: 420px;
+    background: Theme.window-bg;
+    default-font-size: Theme.font-size;
+    default-font-family: Theme.ui-font;
+
+    // Widths of the docked panes (including their dividers) and the
+    // narrowest content area they leave.
+    property <length> sidebar-pane-width: 261px;
+    property <length> info-pane-width: 281px;
+    property <length> min-content-width: 540px;
+
+    // Updated from `changed` handlers rather than bound, because the panes
+    // feed back into the layout width.
+    function update-pane-fit() {
+        AppState.sidebar-fits = root.width >= root.sidebar-pane-width + 500px;
+        let sidebar-docked = AppState.sidebar-visible && AppState.sidebar-fits;
+        AppState.info-fits = root.width - (sidebar-docked ? root.sidebar-pane-width : 0px)
+            >= root.info-pane-width + root.min-content-width;
+        // Drawers only exist while their pane cannot dock.
+        if AppState.sidebar-fits {
+            AppState.sidebar-drawer-open = false;
+        }
+        if AppState.info-fits {
+            AppState.info-drawer-open = false;
+        }
+    }
+
+    changed width => {
+        root.update-pane-fit();
+    }
+
+    property <bool> sidebar-visible-watch: AppState.sidebar-visible;
+    changed sidebar-visible-watch => {
+        root.update-pane-fit();
+    }
+
+    // Picking a thread in the sidebar drawer closes it.
+    property <int> active-tab-watch: AppState.active-tab;
+    changed active-tab-watch => {
+        AppState.sidebar-drawer-open = false;
+    }
+
+    init => {
+        root.update-pane-fit();
+    }
+
+    // 0 = system, 1 = light, 2 = dark. Mode 0 leaves the palette bound to
+    // the system scheme until an override pinned it; Rust then calls
+    // `follow-system-palette` to release it.
+    public function apply-theme(mode: int) {
+        Theme.mode = mode;
+        if mode == 1 {
+            Palette.color-scheme = ColorScheme.light;
+        }
+        if mode == 2 {
+            Palette.color-scheme = ColorScheme.dark;
+        }
+    }
+
+    // `unknown` makes the std widgets follow the live system scheme again
+    // (`Theme.dark` then uses `Theme.system-dark`).
+    public function follow-system-palette() {
+        Palette.color-scheme = ColorScheme.unknown;
+    }
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "New Tab";
+                activated => { AppState.menu-action("new-tab"); }
+            }
+            MenuItem {
+                title: "Open File…";
+                activated => { AppState.menu-action("open-file"); }
+            }
+            MenuItem {
+                title: "Close Tab";
+                activated => { AppState.menu-action("close-tab"); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Settings…";
+                activated => { AppState.menu-action("settings"); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Quit";
+                activated => { AppState.menu-action("quit"); }
+            }
+        }
+        Menu {
+            title: "View";
+            MenuItem {
+                title: "Toggle Sidebar";
+                activated => { AppState.menu-action("toggle-sidebar"); }
+            }
+            MenuItem {
+                title: "Toggle Info Pane";
+                activated => { AppState.menu-action("toggle-info"); }
+            }
+            MenuItem {
+                title: "Next Tab";
+                activated => { AppState.menu-action("next-tab"); }
+            }
+            MenuItem {
+                title: "Previous Tab";
+                activated => { AppState.menu-action("prev-tab"); }
+            }
+        }
+        Menu {
+            title: "Thread";
+            MenuItem {
+                title: "Interrupt";
+                activated => { AppState.menu-action("escape"); }
+            }
+            MenuItem {
+                title: "Fork";
+                activated => { AppState.menu-action("fork"); }
+            }
+            MenuItem {
+                title: "Compact Context";
+                activated => { AppState.menu-action("compact"); }
+            }
+            MenuItem {
+                title: "Review Changes…";
+                activated => { AppState.menu-action("review"); }
+            }
+            MenuItem {
+                title: "Export as Markdown…";
+                activated => { AppState.menu-action("export"); }
+            }
+        }
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "About Codex";
+                activated => { AppState.about-open = true; }
+            }
+            MenuItem {
+                title: "Keyboard Shortcuts";
+                activated => { AppState.menu-action("keyboard"); }
+            }
+            MenuItem {
+                title: "Send Feedback…";
+                activated => { AppState.menu-action("feedback"); }
+            }
+            MenuItem {
+                title: "Open Log Folder";
+                activated => { AppState.menu-action("open-logs"); }
+            }
+            MenuItem {
+                title: "Codex Documentation";
+                activated => { AppState.menu-action("docs"); }
+            }
+        }
+    }
+
+    // Global shortcuts run before the focused widget sees the key; Rust
+    // matches them against the keymap (src/shortcuts.rs).
+    shortcuts := FocusScope {
+        capture-key-pressed(event) => {
+            if AppState.dialog-open || AppState.about-open {
+                return EventResult.reject;
+            }
+            // While the composer's suggestion popup is open, Esc closes it.
+            if ComposerState.popup-open && event.text == Key.Escape {
+                return EventResult.reject;
+            }
+            // Esc closes an open drawer before it interrupts anything.
+            if event.text == Key.Escape && (AppState.sidebar-drawer-open || AppState.info-drawer-open) {
+                AppState.sidebar-drawer-open = false;
+                AppState.info-drawer-open = false;
+                return EventResult.accept;
+            }
+            AppState.key-pressed(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt, event.modifiers.meta)
+                ? EventResult.accept : EventResult.reject
+        }
+
+        VerticalLayout {
+            strip := TabStrip { }
+            banner := WarningsBanner { }
+
+            HorizontalLayout {
+                vertical-stretch: 1;
+
+                if AppState.sidebar-visible && AppState.sidebar-fits: Sidebar {
+                    width: root.sidebar-pane-width - 1px;
+                }
+                if AppState.sidebar-visible && AppState.sidebar-fits: Divider {
+                    vertical: true;
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+
+                    if !AppState.has-active-tab || AppState.active-kind == TabKindCode.new-tab: NewTabView { }
+                    if AppState.has-active-tab && AppState.active-kind == TabKindCode.thread: ThreadPane { }
+                    if AppState.has-active-tab && AppState.active-kind == TabKindCode.file: FileView { }
+                    if AppState.has-active-tab && AppState.active-kind == TabKindCode.settings: SettingsView { }
+                }
+
+                if AppState.info-visible && AppState.info-fits && AppState.has-active-tab && AppState.active-kind == TabKindCode.thread: Divider {
+                    vertical: true;
+                }
+                if AppState.info-visible && AppState.info-fits && AppState.has-active-tab && AppState.active-kind == TabKindCode.thread: InfoPane {
+                    width: root.info-pane-width - 1px;
+                }
+            }
+        }
+
+        // Narrow windows: the sidebar and info pane open over the content.
+        if AppState.sidebar-drawer-open && !AppState.sidebar-fits: Drawer {
+            y: strip.height + banner.height;
+            width: parent.width;
+            height: parent.height - self.y;
+            pane-width: root.sidebar-pane-width;
+            dismissed => { AppState.sidebar-drawer-open = false; }
+            HorizontalLayout {
+                Sidebar { }
+                Divider {
+                    vertical: true;
+                }
+            }
+        }
+        if AppState.info-drawer-open && !AppState.info-fits && AppState.has-active-tab && AppState.active-kind == TabKindCode.thread: Drawer {
+            y: strip.height + banner.height;
+            width: parent.width;
+            height: parent.height - self.y;
+            from-right: true;
+            pane-width: root.info-pane-width;
+            dismissed => { AppState.info-drawer-open = false; }
+            HorizontalLayout {
+                Divider {
+                    vertical: true;
+                }
+                InfoPane { }
+            }
+        }
+    }
+
+    XtabOverlay {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    if AppState.server-status != "ready" && AppState.active-kind != TabKindCode.settings: StatusOverlay {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    PickerOverlay {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    if AppState.dialog-open: Dialog {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    if AppState.about-open: AboutOverlay {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    if AppState.toast != "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - 24px;
+        width: toast-text.preferred-width + 2 * Theme.pad-l;
+        height: toast-text.preferred-height + 2 * Theme.pad-m;
+        background: Theme.text;
+        border-radius: Theme.radius;
+        toast-text := Text {
+            text: AppState.toast;
+            color: Theme.window-bg;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}

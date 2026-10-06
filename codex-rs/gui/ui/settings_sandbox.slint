@@ -1,0 +1,182 @@
+// Settings › Windows sandbox: readiness of the Windows sandbox that
+// isolates agent commands, and its one-time setup
+// (`windowsSandbox/readiness`, `windowsSandbox/setupStart`).
+//
+// OWNER: settings feature (src/settings/windows_sandbox.rs).
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, FlatButton } from "theme.slint";
+import { SettingsState } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, Card, SectionTitle, ToneBadge } from "settings_widgets.slint";
+import { ServerDownBanner } from "settings_config.slint";
+
+component SetupOption inherits Card {
+    in property <string> title;
+    in property <string> description;
+    in property <string> button;
+    in property <bool> allowed;
+    in property <bool> recommended;
+    callback run();
+
+    HorizontalLayout {
+        padding: Theme.pad-l;
+        spacing: Theme.pad-l;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            HorizontalLayout {
+                spacing: Theme.pad-m;
+                Text {
+                    text: root.title;
+                    color: Theme.text;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                if root.recommended: ToneBadge {
+                    text: "Recommended";
+                    tone: 4;
+                    y: (parent.height - self.height) / 2;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+            Text {
+                text: root.allowed ? root.description : "Not allowed by your organization's requirements.";
+                color: root.allowed ? Theme.text-muted : Theme.warning;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            FlatButton {
+                text: root.button;
+                primary: root.recommended && root.allowed && !SettingsState.sandbox-busy && SettingsState.server-ready;
+                enabled: root.allowed && !SettingsState.sandbox-busy && SettingsState.server-ready;
+                clicked => {
+                    root.run();
+                }
+            }
+        }
+    }
+}
+
+export component WindowsSandboxPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+    property <bool> ready: SettingsState.sandbox-readiness == "ready";
+
+    VerticalLayout {
+        PageHeader {
+            title: "Windows sandbox";
+            subtitle: "On Windows, Codex runs agent commands inside a sandbox that limits which files they can change and whether they can reach the network.";
+            side-padding: root.side;
+            FlatButton {
+                text: "Refresh";
+                enabled: SettingsState.server-ready && !SettingsState.sandbox-busy;
+                clicked => {
+                    SettingsState.sandbox-refresh();
+                }
+            }
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            // Size the content to its preferred height; the default (min
+            // height) squeezes wrapped text.
+            content-height: content.preferred-height;
+            content := VerticalLayout {
+                alignment: start;
+                padding-left: root.side;
+                padding-right: root.side;
+                padding-bottom: Theme.pad-xl;
+                spacing: Theme.pad-m;
+
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-s;
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            Text {
+                                text: "Status";
+                                color: Theme.text-muted;
+                                vertical-alignment: center;
+                            }
+                            ToneBadge {
+                                text: SettingsState.sandbox-readiness == "ready" ? "Ready"
+                                    : SettingsState.sandbox-readiness == "update-required" ? "Setup needed"
+                                    : SettingsState.sandbox-readiness == "not-configured" ? "Not set up"
+                                    : SettingsState.sandbox-readiness == "unavailable" ? "Not available"
+                                    : SettingsState.sandbox-readiness == "error" ? "Unknown"
+                                    : "Checking…";
+                                tone: SettingsState.sandbox-readiness == "ready" ? 1
+                                    : SettingsState.sandbox-readiness == "update-required" ? 2
+                                    : SettingsState.sandbox-readiness == "error" ? 3
+                                    : 0;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        Text {
+                            text: SettingsState.sandbox-summary;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                        if SettingsState.sandbox-mode != "": Text {
+                            text: SettingsState.sandbox-mode;
+                            color: Theme.text-muted;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                if SettingsState.sandbox-busy: Banner {
+                    tone: 0;
+                    text: "Setting up the sandbox… Approve the administrator prompt if Windows shows one. This can take a minute.";
+                }
+                if SettingsState.sandbox-error != "": Banner {
+                    tone: 3;
+                    text: SettingsState.sandbox-error;
+                    action: SettingsState.sandbox-offer-unelevated && SettingsState.sandbox-unelevated-allowed ? "Use standard setup" : "";
+                    activated => {
+                        SettingsState.sandbox-setup("unelevated");
+                    }
+                }
+                if SettingsState.sandbox-notice != "": Banner {
+                    tone: 1;
+                    text: SettingsState.sandbox-notice;
+                }
+
+                if SettingsState.sandbox-visible: SectionTitle {
+                    title: root.ready ? "Run setup again" : "Set up";
+                    subtitle: SettingsState.sandbox-folder != "" ? "Setup grants the sandbox access to " + SettingsState.sandbox-folder + "." : "Setup runs without a project folder; each thread's folder is added when it starts.";
+                }
+                if SettingsState.sandbox-visible: SetupOption {
+                    title: "Elevated sandbox";
+                    description: "Strongest isolation. Creates dedicated local sandbox users and firewall rules, which needs administrator approval once.";
+                    button: "Set up";
+                    allowed: SettingsState.sandbox-elevated-allowed;
+                    recommended: true;
+                    run => {
+                        SettingsState.sandbox-setup("elevated");
+                    }
+                }
+                if SettingsState.sandbox-visible: SetupOption {
+                    title: "Standard sandbox";
+                    description: "Runs commands with a restricted token under your own account. No administrator approval, but weaker isolation.";
+                    button: "Set up";
+                    allowed: SettingsState.sandbox-unelevated-allowed;
+                    run => {
+                        SettingsState.sandbox-setup("unelevated");
+                    }
+                }
+            }
+        }
+    }
+}

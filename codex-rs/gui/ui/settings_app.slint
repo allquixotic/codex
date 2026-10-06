@@ -1,0 +1,381 @@
+// Settings pages about the app itself: Appearance (GUI preferences in
+// gui.json) and Diagnostics (config layers, origins, requirements, about).
+//
+// OWNER: settings feature.
+
+import { ScrollView, ComboBox, Switch, SpinBox, LineEdit, AboutSlint } from "std-widgets.slint";
+import { Theme, FlatButton } from "theme.slint";
+import { SettingsState } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, Card, SectionTitle, KeyValueList, ItemRowView } from "settings_widgets.slint";
+
+// Preference card: title and description on the left, control on the right.
+component PrefRow inherits Card {
+    in property <string> title;
+    in property <string> description;
+    in property <string> note;
+
+    HorizontalLayout {
+        padding: Theme.pad-l;
+        spacing: Theme.pad-l;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+            if root.note != "": Text {
+                text: root.note;
+                color: Theme.accent;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
+export component AppearancePage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+    property <length> combo-width: min(SettingsMetrics.control-width, self.width * 0.4);
+
+    VerticalLayout {
+        PageHeader {
+            title: "Appearance";
+            subtitle: "Preferences for this app, saved in gui.json in your Codex home.";
+            side-padding: root.side;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            // Size the content to its preferred height; the default (min
+            // height) squeezes wrapped text and text inputs.
+            content-height: scroll-content-1.preferred-height;
+            scroll-content-1 := VerticalLayout {
+                alignment: start;
+                padding-left: root.side;
+                padding-right: root.side;
+                padding-bottom: Theme.pad-xl;
+                spacing: Theme.pad-m;
+
+                SectionTitle {
+                    title: "Display";
+                }
+                PrefRow {
+                    title: "Theme";
+                    description: "Follow the system setting or always use light or dark colors.";
+                    ComboBox {
+                        width: root.combo-width;
+                        model: ["System", "Light", "Dark"];
+                        current-index <=> SettingsState.pref-theme;
+                        selected => {
+                            SettingsState.pref-changed("theme");
+                        }
+                    }
+                }
+                PrefRow {
+                    title: "Text size";
+                    description: "Base font size in points for the whole window.";
+                    SpinBox {
+                        width: 120px;
+                        minimum: 9;
+                        maximum: 24;
+                        value <=> SettingsState.pref-font-size;
+                        edited => {
+                            SettingsState.pref-changed("font-size");
+                        }
+                    }
+                }
+                PrefRow {
+                    title: "Renderer";
+                    description: "Auto uses the GPU when one is available. Software works everywhere, including virtual desktops without a GPU.";
+                    note: "Takes effect after restarting Codex. In use now: " + SettingsState.renderer-in-use + ".";
+                    ComboBox {
+                        width: root.combo-width;
+                        model: ["Auto", "Software", "GPU"];
+                        current-index <=> SettingsState.pref-renderer;
+                        selected => {
+                            SettingsState.pref-changed("renderer");
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Composer";
+                }
+                PrefRow {
+                    title: "Enter sends the message";
+                    description: "When off, Enter adds a line and Ctrl+Enter (⌘+Enter on macOS) sends.";
+                    Switch {
+                        checked <=> SettingsState.pref-enter-sends;
+                        toggled => {
+                            SettingsState.pref-changed("enter-sends");
+                        }
+                    }
+                }
+                PrefRow {
+                    title: "Sending while the agent works";
+                    description: "Steer adds your message to the running turn. Queue holds it until the turn finishes.";
+                    ComboBox {
+                        width: root.combo-width;
+                        model: ["Steer the running turn", "Queue for later"];
+                        current-index <=> SettingsState.pref-busy-input;
+                        selected => {
+                            SettingsState.pref-changed("busy-input");
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Notifications and tools";
+                }
+                PrefRow {
+                    title: "Desktop notifications";
+                    description: "Notify when a background thread finishes a turn or needs approval.";
+                    Switch {
+                        checked <=> SettingsState.pref-notifications;
+                        toggled => {
+                            SettingsState.pref-changed("notifications");
+                        }
+                    }
+                }
+                PrefRow {
+                    title: "Cross-tab tools for new threads";
+                    description: "Let agents in different tabs list each other and exchange messages. Applies to threads started from now on.";
+                    Switch {
+                        checked <=> SettingsState.pref-cross-tab;
+                        toggled => {
+                            SettingsState.pref-changed("cross-tab");
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Layout";
+                }
+                PrefRow {
+                    title: "Show the thread sidebar";
+                    description: "Also toggled with Ctrl+B (⌘B on macOS).";
+                    Switch {
+                        checked <=> SettingsState.pref-sidebar;
+                        toggled => {
+                            SettingsState.pref-changed("sidebar");
+                        }
+                    }
+                }
+                PrefRow {
+                    title: "Show the info pane";
+                    description: "Model, token usage, diff, and plan for the active thread.";
+                    Switch {
+                        checked <=> SettingsState.pref-info;
+                        toggled => {
+                            SettingsState.pref-changed("info");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component DiagnosticsPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+
+    VerticalLayout {
+        PageHeader {
+            title: "Diagnostics";
+            subtitle: "Where settings come from, managed policy, and details to include in bug reports.";
+            side-padding: root.side;
+            FlatButton {
+                text: "Refresh";
+                enabled: SettingsState.server-ready;
+                clicked => {
+                    SettingsState.page-refresh("diagnostics");
+                }
+            }
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            // Size the content to its preferred height; the default (min
+            // height) squeezes wrapped text and text inputs.
+            content-height: scroll-content-2.preferred-height;
+            scroll-content-2 := VerticalLayout {
+                alignment: start;
+                padding-left: root.side;
+                padding-right: root.side;
+                padding-bottom: Theme.pad-xl;
+                spacing: Theme.pad-m;
+
+                if SettingsState.server-error != "": Banner {
+                    tone: 3;
+                    text: "Codex is not running: " + SettingsState.server-error;
+                    action: "Restart Codex";
+                    activated => {
+                        SettingsState.restart-server();
+                    }
+                }
+
+                SectionTitle {
+                    title: "This app";
+                }
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        KeyValueList {
+                            items: SettingsState.diag-facts;
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            alignment: end;
+                            FlatButton {
+                                text: "Open log folder";
+                                clicked => {
+                                    SettingsState.open-path("logs");
+                                }
+                            }
+                            FlatButton {
+                                text: "Open Codex home";
+                                clicked => {
+                                    SettingsState.open-path("home");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Configuration layers";
+                    subtitle: "Highest precedence first. Project layers are resolved for the selected folder.";
+                }
+                HorizontalLayout {
+                    spacing: Theme.pad-l;
+                    Text {
+                        text: "Folder";
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: SettingsState.context-options;
+                        current-index <=> SettingsState.context-index;
+                        selected => {
+                            SettingsState.context-selected(self.current-index);
+                        }
+                    }
+                }
+                if SettingsState.diag-layers.length == 0: Text {
+                    text: SettingsState.server-ready ? "No configuration files are loaded; built-in defaults apply." : "Layers are available once Codex is running.";
+                    color: Theme.text-faint;
+                    wrap: word-wrap;
+                }
+                VerticalLayout {
+                    for layer in SettingsState.diag-layers: ItemRowView {
+                        item: layer;
+                        side-padding: 0px;
+                    }
+                }
+
+                SectionTitle {
+                    title: "Where does a setting come from?";
+                    subtitle: "Enter a key path such as model, sandbox_workspace_write, or features.memories.";
+                }
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            key-edit := LineEdit {
+                                horizontal-stretch: 1;
+                                placeholder-text: "Key path";
+                                text <=> SettingsState.diag-key;
+                                accepted(text) => {
+                                    SettingsState.diag-lookup(text);
+                                }
+                            }
+                            FlatButton {
+                                text: "Look up";
+                                enabled: SettingsState.diag-key != "";
+                                clicked => {
+                                    SettingsState.diag-lookup(SettingsState.diag-key);
+                                }
+                            }
+                        }
+                        KeyValueList {
+                            items: SettingsState.diag-origins;
+                            key-width: 200px;
+                            empty-text: "Look up a key to see its effective value and the layers that set it.";
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Managed requirements";
+                    subtitle: "Policy from requirements.toml, MDM, or your organization. These values cannot be changed here.";
+                }
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        KeyValueList {
+                            items: SettingsState.diag-requirements;
+                            key-width: 220px;
+                            empty-text: SettingsState.server-ready ? "No managed requirements apply." : "Requirements are available once Codex is running.";
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Warnings";
+                    subtitle: "Problems found at startup, in config changes, and in gui.json.";
+                }
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-s;
+                        if SettingsState.diag-warnings.length == 0: Text {
+                            text: "No warnings.";
+                            color: Theme.text-faint;
+                        }
+                        for warning in SettingsState.diag-warnings: TextInput {
+                            text: warning;
+                            read-only: true;
+                            single-line: false;
+                            wrap: word-wrap;
+                            color: Theme.warning;
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "About";
+                }
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        Text {
+                            text: "Codex is open source. This app's interface is built with Slint.";
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+                        AboutSlint {
+                            min-height: 110px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

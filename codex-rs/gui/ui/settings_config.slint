@@ -1,0 +1,247 @@
+// Settings pages that edit config.toml: Common, All settings, and the raw
+// file editor.
+//
+// OWNER: settings feature.
+
+import { ListView, LineEdit, TextEdit } from "std-widgets.slint";
+import { Theme, FlatButton } from "theme.slint";
+import { SettingsState } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, FieldRowView } from "settings_widgets.slint";
+
+// Shown on pages that need the embedded server while it is down.
+export component ServerDownBanner inherits VerticalLayout {
+    in property <length> side-padding;
+    padding-left: side-padding;
+    padding-right: side-padding;
+    padding-bottom: Theme.pad-m;
+    if SettingsState.server-error != "": Banner {
+        tone: 3;
+        text: "Codex is not running: " + SettingsState.server-error;
+        action: "Edit config.toml";
+        activated => {
+            SettingsState.open-page("raw");
+        }
+    }
+    if SettingsState.server-error == "" && !SettingsState.server-ready: Banner {
+        tone: 0;
+        text: "Codex is starting…";
+    }
+}
+
+// Shown on config pages while the configured model provider differs from
+// the one Codex started with.
+export component RestartBanner inherits VerticalLayout {
+    in property <length> side-padding;
+    padding-left: side-padding;
+    padding-right: side-padding;
+    padding-bottom: Theme.pad-m;
+    if SettingsState.restart-note != "": Banner {
+        tone: 2;
+        text: SettingsState.restart-note;
+        action: SettingsState.restart-offer ? "Restart Codex" : "";
+        activated => {
+            SettingsState.restart-server();
+        }
+    }
+}
+
+export component CommonPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+
+    VerticalLayout {
+        PageHeader {
+            title: "Common settings";
+            subtitle: "Defaults saved to your config.toml. Model and reasoning effort apply to new threads; other changes reach open threads right away.";
+            side-padding: root.side;
+            FlatButton {
+                text: "Reload";
+                clicked => {
+                    SettingsState.reload-config();
+                }
+            }
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+        RestartBanner {
+            side-padding: root.side;
+        }
+        if SettingsState.common-status != "": HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            padding-bottom: Theme.pad-s;
+            Text {
+                text: SettingsState.common-status;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for field in SettingsState.common-fields: FieldRowView {
+                field: field;
+                side-padding: root.side;
+                toggled(value) => {
+                    SettingsState.field-toggle("common", field.key, value);
+                }
+                selected(index) => {
+                    SettingsState.field-select("common", field.key, index);
+                }
+                apply(text) => {
+                    SettingsState.field-apply("common", field.key, text);
+                }
+                reset => {
+                    SettingsState.field-reset("common", field.key);
+                }
+                expand(open) => {
+                    SettingsState.field-expand("common", field.key, open);
+                }
+            }
+        }
+    }
+}
+
+export component AllSettingsPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+
+    VerticalLayout {
+        PageHeader {
+            title: "All settings";
+            subtitle: "Every config.toml key, generated from the configuration schema. Values set by project or managed layers are read-only here.";
+            side-padding: root.side;
+            FlatButton {
+                text: "Reload";
+                clicked => {
+                    SettingsState.reload-config();
+                }
+            }
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+        RestartBanner {
+            side-padding: root.side;
+        }
+        HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            padding-bottom: Theme.pad-s;
+            spacing: Theme.pad-m;
+            search := LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "Search settings by key or description";
+                text <=> SettingsState.all-search;
+                edited(text) => {
+                    SettingsState.all-search-edited(text);
+                }
+            }
+        }
+        if SettingsState.all-status != "": HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            Text {
+                text: SettingsState.all-status;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for field in SettingsState.all-fields: FieldRowView {
+                field: field;
+                side-padding: root.side;
+                toggled(value) => {
+                    SettingsState.field-toggle("all", field.key, value);
+                }
+                selected(index) => {
+                    SettingsState.field-select("all", field.key, index);
+                }
+                apply(text) => {
+                    SettingsState.field-apply("all", field.key, text);
+                }
+                reset => {
+                    SettingsState.field-reset("all", field.key);
+                }
+                expand(open) => {
+                    SettingsState.field-expand("all", field.key, open);
+                }
+            }
+        }
+    }
+}
+
+export component RawConfigPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+    property <bool> dirty: SettingsState.raw-draft != SettingsState.raw-text;
+
+    VerticalLayout {
+        PageHeader {
+            title: "config.toml";
+            subtitle: SettingsState.raw-path;
+            side-padding: root.side;
+            FlatButton {
+                text: "Reload from disk";
+                enabled: !SettingsState.raw-busy;
+                clicked => {
+                    SettingsState.raw-reload();
+                }
+            }
+            FlatButton {
+                text: "Save";
+                primary: root.dirty && !SettingsState.raw-busy;
+                enabled: root.dirty && !SettingsState.raw-busy && SettingsState.raw-loaded;
+                clicked => {
+                    SettingsState.raw-save(SettingsState.raw-draft);
+                }
+            }
+        }
+        VerticalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            spacing: Theme.pad-m;
+            padding-bottom: Theme.pad-m;
+            if SettingsState.server-error != "": Banner {
+                tone: 3;
+                text: "Codex could not start: " + SettingsState.server-error;
+                action: "Restart Codex";
+                activated => {
+                    SettingsState.restart-server();
+                }
+            }
+            if SettingsState.raw-error != "": Banner {
+                tone: 3;
+                text: SettingsState.raw-error;
+            }
+            if SettingsState.raw-status != "": Banner {
+                tone: 0;
+                text: SettingsState.raw-status;
+            }
+        }
+        RestartBanner {
+            side-padding: root.side;
+        }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            padding-left: root.side;
+            padding-right: root.side;
+            TextEdit {
+                text <=> SettingsState.raw-draft;
+                font-family: Theme.mono-font;
+                wrap: no-wrap;
+                enabled: SettingsState.raw-loaded;
+                placeholder-text: SettingsState.raw-loaded ? "# config.toml is empty" : "Loading…";
+            }
+        }
+        HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            padding-top: Theme.pad-s;
+            padding-bottom: Theme.pad-m;
+            Text {
+                text: SettingsState.raw-busy ? "Working…" : root.dirty ? "Unsaved changes" : "No unsaved changes";
+                color: root.dirty ? Theme.warning : Theme.text-faint;
+                font-size: Theme.font-size-small;
+            }
+        }
+    }
+}

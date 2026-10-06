@@ -1,0 +1,333 @@
+// Diff viewer: a virtualized list of file headers, hunks, and lines with
+// intra-line highlights. Rows come from `DiffRowsModel` in
+// src/files/diff_view.rs.
+
+import { ListView } from "std-widgets.slint";
+import { Theme, LinkButton, Badge } from "theme.slint";
+import { FilesState, DiffRowData } from "files_state.slint";
+import { FileHeader, ToolLink, Placeholder } from "files_viewer.slint";
+
+// Row kinds, mirrored by `DiffRowKind` in src/files/diff_view.rs.
+global DiffKinds {
+    out property <int> file-header: 0;
+    out property <int> meta: 1;
+    out property <int> hunk: 2;
+    out property <int> context: 3;
+    out property <int> added: 4;
+    out property <int> removed: 5;
+    out property <int> no-newline: 6;
+    out property <int> binary: 7;
+}
+
+component Mono inherits Text {
+    font-family: Theme.mono-font;
+    font-size: Theme.font-size;
+    vertical-alignment: center;
+}
+
+// Expand/collapse triangle, drawn so it centers the same on every font.
+component Chevron inherits Rectangle {
+    in property <bool> expanded;
+    width: 12px;
+    height: 12px;
+
+    if root.expanded: Path {
+        x: 2px;
+        y: 4px;
+        width: 8px;
+        height: 5px;
+        commands: "M 0 0 L 8 0 L 4 5 Z";
+        fill: Theme.text-muted;
+    }
+    if !root.expanded: Path {
+        x: 4px;
+        y: 2px;
+        width: 5px;
+        height: 8px;
+        commands: "M 0 0 L 5 4 L 0 8 Z";
+        fill: Theme.text-muted;
+    }
+}
+
+component FileRow inherits Rectangle {
+    in property <DiffRowData> data;
+    // Horizontal scroll offset of the list; the header stays in view.
+    in property <length> scroll-x;
+    in property <length> view-width;
+
+    height: (root.data.first ? 0px : Theme.pad-l) + bar.height;
+
+    bar := Rectangle {
+        x: -root.scroll-x;
+        y: root.height - self.height;
+        width: root.view-width;
+        height: bar-row.preferred-height;
+        background: touch.has-hover ? Theme.hover : Theme.surface-alt;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                FilesState.diff-toggle-file(root.data.file);
+            }
+        }
+
+        bar-row := HorizontalLayout {
+            padding-left: Theme.pad-m;
+            padding-right: Theme.pad-m;
+            padding-top: Theme.pad-s;
+            padding-bottom: Theme.pad-s;
+            spacing: Theme.pad-m;
+
+            Chevron {
+                y: (parent.height - self.height) / 2;
+                expanded: !root.data.collapsed;
+            }
+            Text {
+                text: root.data.text;
+                color: Theme.text;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.data.status != "modified": Badge {
+                y: (parent.height - self.height) / 2;
+                text: root.data.status;
+                fg: root.data.status == "added" ? Theme.success
+                    : root.data.status == "deleted" ? Theme.danger
+                    : Theme.text-muted;
+                bg: root.data.status == "added" ? Theme.success-soft
+                    : root.data.status == "deleted" ? Theme.danger-soft
+                    : Theme.surface;
+            }
+            Text {
+                text: "+" + root.data.added;
+                color: Theme.diff-add-fg;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "−" + root.data.removed;
+                color: Theme.diff-del-fg;
+                font-size: Theme.font-size-small;
+                vertical-alignment: center;
+            }
+            if root.data.can-open: LinkButton {
+                text: "Open";
+                clicked => {
+                    FilesState.diff-open-file(root.data.file);
+                }
+            }
+        }
+    }
+}
+
+component LineRow inherits Rectangle {
+    in property <DiffRowData> data;
+    in property <length> number-width;
+    in property <length> char-width;
+
+    property <bool> is-added: root.data.kind == DiffKinds.added;
+    property <bool> is-removed: root.data.kind == DiffKinds.removed;
+    property <color> emphasis: root.is-added ? Theme.diff-add-fg.with-alpha(0.28) : Theme.diff-del-fg.with-alpha(0.28);
+
+    background: root.is-added ? Theme.diff-add-bg : root.is-removed ? Theme.diff-del-bg : transparent;
+    height: line.preferred-height;
+
+    line := HorizontalLayout {
+        padding-top: 1px;
+        padding-bottom: 1px;
+
+        Mono {
+            width: root.number-width;
+            text: root.data.old-no;
+            color: Theme.text-faint;
+            horizontal-alignment: right;
+        }
+        Mono {
+            width: root.number-width;
+            text: root.data.new-no;
+            color: Theme.text-faint;
+            horizontal-alignment: right;
+        }
+        Mono {
+            width: 3 * root.char-width;
+            text: root.is-added ? "+" : root.is-removed ? "−" : "";
+            color: root.is-added ? Theme.diff-add-fg : Theme.diff-del-fg;
+            horizontal-alignment: center;
+        }
+        if root.data.spans.length == 0: Mono {
+            text: root.data.text;
+            color: Theme.text;
+        }
+        if root.data.spans.length > 0: HorizontalLayout {
+            for span in root.data.spans: Rectangle {
+                width: span-text.preferred-width;
+                background: span.emphasized ? root.emphasis : transparent;
+                span-text := Mono {
+                    text: span.text;
+                    color: Theme.text;
+                }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+component DiffRow inherits Rectangle {
+    in property <DiffRowData> data;
+    in property <length> number-width;
+    in property <length> char-width;
+    in property <length> scroll-x;
+    in property <length> view-width;
+
+    property <length> text-x: 2 * root.number-width + 3 * root.char-width;
+
+    VerticalLayout {
+        if root.data.kind == DiffKinds.file-header: FileRow {
+            data: root.data;
+            scroll-x: root.scroll-x;
+            view-width: root.view-width;
+        }
+        if root.data.kind == DiffKinds.hunk: Rectangle {
+            background: Theme.accent-soft;
+            height: hunk-text.preferred-height + 2 * Theme.pad-xs;
+            hunk-text := Mono {
+                x: Theme.pad-m;
+                text: root.data.text;
+                color: Theme.diff-hunk-fg;
+            }
+        }
+        if root.data.kind >= DiffKinds.context && root.data.kind <= DiffKinds.removed: LineRow {
+            data: root.data;
+            number-width: root.number-width;
+            char-width: root.char-width;
+        }
+        if root.data.kind == DiffKinds.meta || root.data.kind == DiffKinds.no-newline || root.data.kind == DiffKinds.binary: Rectangle {
+            height: note-text.preferred-height + 2 * Theme.pad-xs;
+            note-text := Text {
+                x: root.data.kind == DiffKinds.meta ? Theme.pad-m : root.text-x;
+                text: root.data.text;
+                color: Theme.text-muted;
+                font-family: root.data.kind == DiffKinds.meta ? Theme.mono-font : Theme.ui-font;
+                font-size: root.data.kind == DiffKinds.meta ? Theme.font-size : Theme.font-size-small;
+                font-italic: root.data.kind != DiffKinds.meta;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component DiffList inherits Rectangle {
+    in property <length> char-width;
+    in property <length> number-width;
+
+    property <bool> restore-pending: FilesState.restore-pending;
+
+    changed restore-pending => {
+        if root.restore-pending {
+            restore-timer.running = true;
+        }
+    }
+
+    init => {
+        if FilesState.restore-pending {
+            restore-timer.running = true;
+        }
+    }
+
+    // Restores the saved position once rows exist; the list clamps it while
+    // it is still empty.
+    restore-timer := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            // A diff view on its way out must not take a file tab's request.
+            if FilesState.restore-pending && FilesState.is-diff {
+                FilesState.restore-pending = false;
+                list.content-x = FilesState.restore-x;
+                list.content-y = FilesState.restore-y;
+            }
+        }
+    }
+
+    list := ListView {
+        width: root.width;
+        height: root.height;
+        content-x <=> FilesState.scroll-x;
+        content-y <=> FilesState.scroll-y;
+        content-width: max(self.visible-width,
+            2 * root.number-width + (3 + FilesState.diff-max-chars) * root.char-width + 2 * Theme.pad-l);
+
+        for item in FilesState.diff-rows: DiffRow {
+            width: list.content-width;
+            data: item;
+            number-width: root.number-width;
+            char-width: root.char-width;
+            scroll-x: list.content-x;
+            view-width: list.visible-width;
+        }
+    }
+}
+
+// The diff viewer for one diff tab.
+export component DiffFileView inherits Rectangle {
+    background: Theme.surface;
+
+    property <length> char-width: probe.preferred-width / 10;
+    property <length> number-width: max(2, FilesState.diff-number-digits) * root.char-width + Theme.pad-l;
+
+    probe := Text {
+        text: "0000000000";
+        font-family: Theme.mono-font;
+        font-size: Theme.font-size;
+        visible: false;
+    }
+
+    VerticalLayout {
+        FileHeader {
+            title: FilesState.title;
+            subtitle: FilesState.diff-summary;
+
+            ToolLink {
+                text: "Expand all";
+                clicked => {
+                    FilesState.diff-set-collapsed(false);
+                }
+            }
+            ToolLink {
+                text: "Collapse all";
+                clicked => {
+                    FilesState.diff-set-collapsed(true);
+                }
+            }
+            ToolLink {
+                text: "Copy diff";
+                clicked => {
+                    FilesState.copy-diff();
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        if FilesState.diff-hint != "": Placeholder {
+            vertical-stretch: 1;
+            heading: FilesState.diff-hint;
+        }
+
+        if FilesState.diff-hint == "": DiffList {
+            vertical-stretch: 1;
+            char-width: root.char-width;
+            number-width: root.number-width;
+        }
+    }
+}

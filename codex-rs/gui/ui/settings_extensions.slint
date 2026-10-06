@@ -1,0 +1,278 @@
+// Settings pages listing extensions: MCP servers, skills, plugins, hooks,
+// and feature flags. Every list uses `ItemRowView` and reports toggles and
+// button presses as `item-toggle` / `item-action` with the page id.
+//
+// OWNER: settings feature.
+
+import { ListView, LineEdit, ComboBox } from "std-widgets.slint";
+import { Theme, FlatButton } from "theme.slint";
+import { SettingsState, ItemRow } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, Card, ItemRowView } from "settings_widgets.slint";
+import { ServerDownBanner } from "settings_config.slint";
+
+// Header, status line, and a virtualized list of items for page `page-id`.
+export component ItemListPage inherits Rectangle {
+    in property <string> page-id;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <[ItemRow]> items;
+    in property <string> status;
+    in property <string> empty-text: "Nothing here yet.";
+    property <length> side: SettingsMetrics.side(self.width);
+
+    VerticalLayout {
+        PageHeader {
+            title: root.title;
+            subtitle: root.subtitle;
+            side-padding: root.side;
+            FlatButton {
+                text: "Refresh";
+                enabled: SettingsState.server-ready;
+                clicked => {
+                    SettingsState.page-refresh(root.page-id);
+                }
+            }
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+        if root.status != "": HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            padding-bottom: Theme.pad-m;
+            Text {
+                text: root.status;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+        if root.items.length == 0 && root.status == "": HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            Text {
+                text: root.empty-text;
+                color: Theme.text-faint;
+                wrap: word-wrap;
+            }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for item in root.items: ItemRowView {
+                item: item;
+                side-padding: root.side;
+                toggled(on) => {
+                    SettingsState.item-toggle(root.page-id, item.id, on);
+                }
+                action(action-id) => {
+                    SettingsState.item-action(root.page-id, item.id, action-id);
+                }
+            }
+        }
+    }
+}
+
+component FormRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: Theme.pad-l;
+    Text {
+        text: root.label;
+        color: Theme.text-muted;
+        width: 150px;
+        vertical-alignment: center;
+    }
+    @children
+}
+
+component McpServerForm inherits Card {
+    VerticalLayout {
+        padding: Theme.pad-l;
+        spacing: Theme.pad-m;
+        Text {
+            text: "Add an MCP server";
+            color: Theme.text;
+            font-weight: 600;
+        }
+        FormRow {
+            label: "Name";
+            LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "docs";
+                text <=> SettingsState.mcp-form-name;
+            }
+        }
+        FormRow {
+            label: "Transport";
+            ComboBox {
+                horizontal-stretch: 1;
+                model: ["Command (stdio)", "Streamable HTTP"];
+                current-index <=> SettingsState.mcp-form-kind;
+            }
+        }
+        if SettingsState.mcp-form-kind == 0: FormRow {
+            label: "Command";
+            LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "npx";
+                text <=> SettingsState.mcp-form-command;
+            }
+        }
+        if SettingsState.mcp-form-kind == 0: FormRow {
+            label: "Arguments";
+            LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "-y @modelcontextprotocol/server-everything";
+                text <=> SettingsState.mcp-form-args;
+            }
+        }
+        if SettingsState.mcp-form-kind == 0: FormRow {
+            label: "Environment";
+            LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "KEY=value OTHER=value";
+                text <=> SettingsState.mcp-form-env;
+            }
+        }
+        if SettingsState.mcp-form-kind == 1: FormRow {
+            label: "URL";
+            LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "https://example.com/mcp";
+                text <=> SettingsState.mcp-form-url;
+            }
+        }
+        if SettingsState.mcp-form-kind == 1: FormRow {
+            label: "Bearer token variable";
+            LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "Optional, e.g. EXAMPLE_TOKEN";
+                text <=> SettingsState.mcp-form-token-env;
+            }
+        }
+        if SettingsState.mcp-form-error != "": Text {
+            text: SettingsState.mcp-form-error;
+            color: Theme.danger;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+            alignment: end;
+            FlatButton {
+                text: "Cancel";
+                clicked => {
+                    SettingsState.mcp-form-open = false;
+                }
+            }
+            FlatButton {
+                text: SettingsState.mcp-form-busy ? "Adding…" : "Add server";
+                primary: !SettingsState.mcp-form-busy;
+                enabled: !SettingsState.mcp-form-busy && SettingsState.server-ready;
+                clicked => {
+                    SettingsState.mcp-form-submit();
+                }
+            }
+        }
+    }
+}
+
+export component McpPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+
+    VerticalLayout {
+        PageHeader {
+            title: "MCP servers";
+            subtitle: "Tools from Model Context Protocol servers. Servers defined in your config.toml can be turned off, removed, or signed in to.";
+            side-padding: root.side;
+            FlatButton {
+                text: "Add server";
+                enabled: !SettingsState.mcp-form-open;
+                clicked => {
+                    SettingsState.mcp-form-open = true;
+                }
+            }
+            FlatButton {
+                text: "Reload";
+                enabled: SettingsState.server-ready;
+                clicked => {
+                    SettingsState.page-refresh("mcp");
+                }
+            }
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+        if SettingsState.mcp-form-open: HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            padding-bottom: Theme.pad-m;
+            McpServerForm { }
+        }
+        if SettingsState.mcp-status != "": HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            padding-bottom: Theme.pad-m;
+            Text {
+                text: SettingsState.mcp-status;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+        if SettingsState.mcp-items.length == 0 && SettingsState.mcp-status == "": HorizontalLayout {
+            padding-left: root.side;
+            padding-right: root.side;
+            Text {
+                text: "No MCP servers are configured. Use Add server to connect one.";
+                color: Theme.text-faint;
+                wrap: word-wrap;
+            }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for item in SettingsState.mcp-items: ItemRowView {
+                item: item;
+                side-padding: root.side;
+                toggled(on) => {
+                    SettingsState.item-toggle("mcp", item.id, on);
+                }
+                action(action-id) => {
+                    SettingsState.item-action("mcp", item.id, action-id);
+                }
+            }
+        }
+    }
+}
+
+export component SkillsPage inherits ItemListPage {
+    page-id: "skills";
+    title: "Skills";
+    subtitle: "Reusable instructions the agent can load on demand. " + SettingsState.list-context;
+    items: SettingsState.skill-items;
+    status: SettingsState.skill-status;
+    empty-text: "No skills found. Add SKILL.md folders under $CODEX_HOME/skills or a project's .codex/skills.";
+}
+
+export component PluginsPage inherits ItemListPage {
+    page-id: "plugins";
+    title: "Plugins";
+    subtitle: "Bundles of skills, MCP servers, hooks, and apps from plugin marketplaces.";
+    items: SettingsState.plugin-items;
+    status: SettingsState.plugin-status;
+    empty-text: "No plugin marketplaces are available.";
+}
+
+export component HooksPage inherits ItemListPage {
+    page-id: "hooks";
+    title: "Hooks";
+    subtitle: "Commands that run on agent lifecycle events. New or changed hooks run only after you trust them. " + SettingsState.list-context;
+    items: SettingsState.hook-items;
+    status: SettingsState.hook-status;
+    empty-text: "No hooks are configured.";
+}
+
+export component FeaturesPage inherits ItemListPage {
+    page-id: "features";
+    title: "Features";
+    subtitle: "Feature flags saved as features.<name> in config.toml. Beta features are ready to try; features under development may be unstable.";
+    items: SettingsState.feature-items;
+    status: SettingsState.feature-status;
+    empty-text: "No feature flags reported.";
+}

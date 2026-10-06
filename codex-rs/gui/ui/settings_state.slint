@@ -1,0 +1,344 @@
+// Settings tab state shared by every settings page.
+//
+// OWNER: settings feature (src/settings/). `SettingsState` is the only global;
+// Rust drives it from `src/settings/mod.rs`. `FieldData`, `ItemRow`,
+// `KeyValue`, and `ShortcutRow` are re-exported from app.slint so Rust can
+// build rows.
+
+// One config setting row (Common and All settings pages).
+export struct FieldData {
+    // 0 = section header, 1 = bool, 2 = enum, 3 = text, 4 = integer,
+    // 5 = number, 6 = TOML snippet.
+    kind: int,
+    // Key path used in callbacks.
+    key: string,
+    title: string,
+    // Key path shown under the title (empty hides it).
+    path: string,
+    description: string,
+    // Origin layer label ("Default", "User config", "Project config", ...).
+    origin: string,
+    origin-detail: string,
+    // 0 = default, 1 = user, 2 = lower layer, 3 = overridden or managed.
+    origin-tone: int,
+    locked: bool,
+    lock-reason: string,
+    can-reset: bool,
+    checked: bool,
+    options: [string],
+    option-index: int,
+    // Current text (text, number, and snippet kinds).
+    text: string,
+    placeholder: string,
+    // One-line summary of a collapsed snippet.
+    summary: string,
+    // Informational note shown in accent color.
+    note: string,
+    error: string,
+    expanded: bool,
+    busy: bool,
+    // Bumped whenever Rust replaces the row so edited controls resync.
+    revision: int,
+}
+
+// One entry of a list page (MCP servers, skills, plugins, hooks, features,
+// config layers).
+export struct ItemRow {
+    // 0 = item, 1 = section header.
+    kind: int,
+    id: string,
+    title: string,
+    // Monospace line (command, URL, path).
+    subtitle: string,
+    description: string,
+    status: string,
+    // 0 = neutral, 1 = success, 2 = warning, 3 = danger, 4 = accent.
+    status-tone: int,
+    tag: string,
+    detail: string,
+    error: string,
+    has-toggle: bool,
+    toggle-on: bool,
+    toggle-enabled: bool,
+    // Primary and secondary action buttons; empty labels hide them.
+    action: string,
+    action-id: string,
+    secondary: string,
+    secondary-id: string,
+    secondary-danger: bool,
+    busy: bool,
+    revision: int,
+}
+
+export struct KeyValue {
+    key: string,
+    value: string,
+    mono: bool,
+}
+
+// One bindable action on the Keyboard page.
+export struct ShortcutRow {
+    action: string,
+    label: string,
+    // Effective binding for display ("⌘T", "Unbound").
+    binding: string,
+    // Default binding for display.
+    default-binding: string,
+    // The binding differs from the default.
+    custom: bool,
+    unbound: bool,
+    recording: bool,
+    // Shown under the row: a conflicting or invalid binding.
+    warning: string,
+    // Another action bound to the same keys; offers to unbind it.
+    conflict-action: string,
+    conflict-label: string,
+    revision: int,
+}
+
+export global SettingsState {
+    // "common" | "all" | "raw" | "import" | "account" | "bedrock" | "mcp" |
+    // "skills" | "plugins" | "hooks" | "features" | "memories" |
+    // "appearance" | "keyboard" | "connection" | "windows-sandbox" |
+    // "diagnostics" | "feedback"
+    in-out property <string> page: "common";
+    in property <bool> server-ready;
+    // Non-empty when the embedded server failed to start.
+    in property <string> server-error;
+    callback open-page(string);
+    callback restart-server();
+    callback copy-text(string);
+    callback open-url(string);
+    callback open-path(string);
+    // Non-empty when the configured model provider differs from the one the
+    // server started with; shown on the config pages.
+    in property <string> restart-note;
+    // Offer "Restart Codex" with the note (embedded server only).
+    in property <bool> restart-offer;
+
+    // ----- Common and All settings ---------------------------------------
+    in property <[FieldData]> common-fields;
+    in property <string> common-status;
+    in property <[FieldData]> all-fields;
+    in property <string> all-status;
+    in-out property <string> all-search;
+    callback all-search-edited(string);
+    // (page, key, value)
+    callback field-toggle(string, string, bool);
+    callback field-select(string, string, int);
+    callback field-apply(string, string, string);
+    callback field-reset(string, string);
+    callback field-expand(string, string, bool);
+    callback reload-config();
+
+    // ----- Raw config.toml -----------------------------------------------
+    in property <string> raw-path;
+    // Text last loaded from or saved to disk.
+    in property <string> raw-text;
+    // Editor contents; kept here so drafts survive switching pages.
+    in-out property <string> raw-draft;
+    in property <bool> raw-loaded;
+    in property <bool> raw-busy;
+    in property <string> raw-status;
+    in property <string> raw-error;
+    callback raw-save(string);
+    callback raw-reload();
+
+    // ----- Account -------------------------------------------------------
+    // "loading" | "none" | "chatgpt" | "apikey" | "bedrock" | "error"
+    in property <string> account-kind: "loading";
+    in property <string> account-title;
+    in property <string> account-detail;
+    in property <[KeyValue]> account-facts;
+    // "" | "starting" | "browser" | "device"
+    in property <string> login-state;
+    in property <string> login-url;
+    in property <string> login-code;
+    in property <string> account-error;
+    in property <string> account-notice;
+    in property <bool> chatgpt-login-allowed: true;
+    in property <bool> api-login-allowed: true;
+    in property <bool> can-logout;
+    in property <bool> account-busy;
+    in property <[KeyValue]> rate-limits;
+    in property <string> rate-limits-status;
+    // "browser" | "device"
+    callback account-login(string);
+    callback account-api-key(string);
+    callback account-cancel-login();
+    callback account-logout();
+    callback account-refresh();
+
+    // ----- List pages ----------------------------------------------------
+    in property <[ItemRow]> mcp-items;
+    in property <string> mcp-status;
+    in property <[ItemRow]> skill-items;
+    in property <string> skill-status;
+    in property <[ItemRow]> plugin-items;
+    in property <string> plugin-status;
+    in property <[ItemRow]> hook-items;
+    in property <string> hook-status;
+    in property <[ItemRow]> feature-items;
+    in property <string> feature-status;
+    in property <string> list-context;
+    // (page, id, on)
+    callback item-toggle(string, string, bool);
+    // (page, id, action-id)
+    callback item-action(string, string, string);
+    callback page-refresh(string);
+
+    // MCP "add server" form.
+    in-out property <bool> mcp-form-open;
+    // 0 = stdio command, 1 = streamable HTTP.
+    in-out property <int> mcp-form-kind;
+    in-out property <string> mcp-form-name;
+    in-out property <string> mcp-form-command;
+    in-out property <string> mcp-form-args;
+    in-out property <string> mcp-form-env;
+    in-out property <string> mcp-form-url;
+    in-out property <string> mcp-form-token-env;
+    in property <string> mcp-form-error;
+    in property <bool> mcp-form-busy;
+    callback mcp-form-submit();
+
+    // ----- Memories --------------------------------------------------------
+    // The memories feature flag and the two settings; rows use the field
+    // callbacks with page "memories".
+    in property <[FieldData]> memory-fields;
+    in property <string> memories-status;
+    // The memories feature is on (or not known yet).
+    in property <bool> memories-feature-on: true;
+    in property <bool> memories-resetting;
+    in property <string> memories-notice;
+    in property <int> memories-notice-tone;
+    callback memories-reset();
+    callback memories-learn-more();
+
+    // ----- Appearance (GUI preferences) ----------------------------------
+    // 0 = system, 1 = light, 2 = dark.
+    in-out property <int> pref-theme;
+    in-out property <int> pref-font-size: 13;
+    // 0 = auto, 1 = software, 2 = GPU.
+    in-out property <int> pref-renderer;
+    in-out property <bool> pref-enter-sends: true;
+    // 0 = steer, 1 = queue.
+    in-out property <int> pref-busy-input;
+    in-out property <bool> pref-notifications: true;
+    in-out property <bool> pref-cross-tab: true;
+    in-out property <bool> pref-sidebar: true;
+    in-out property <bool> pref-info: true;
+    in property <string> renderer-in-use;
+    // Name of the preference that changed; Rust reads the property.
+    callback pref-changed(string);
+
+    // ----- Diagnostics ---------------------------------------------------
+    in property <[KeyValue]> diag-facts;
+    in property <[ItemRow]> diag-layers;
+    in property <[KeyValue]> diag-requirements;
+    in property <[string]> diag-warnings;
+    in-out property <string> diag-key;
+    in property <[KeyValue]> diag-origins;
+    in property <[string]> context-options;
+    in-out property <int> context-index;
+    callback diag-lookup(string);
+    callback context-selected(int);
+
+    // ----- Keyboard shortcuts ----------------------------------------------
+    in property <[ShortcutRow]> shortcut-rows;
+    // Action whose new binding is being recorded ("" when idle).
+    in property <string> shortcut-recording;
+    in property <bool> shortcut-any-custom;
+    in property <string> shortcut-notice;
+    // 0 info, 1 success, 2 warning, 3 danger.
+    in property <int> shortcut-notice-tone;
+    // A recorded binding that conflicts with another action, waiting for
+    // the user to reassign it or cancel.
+    in property <string> shortcut-pending;
+    in property <string> shortcut-pending-accept;
+    callback shortcut-record(string);
+    callback shortcut-cancel();
+    // (text, control, shift, alt, meta) from the recording FocusScope.
+    callback shortcut-key(string, bool, bool, bool, bool);
+    callback shortcut-reset(string);
+    callback shortcut-unbind(string);
+    callback shortcut-reset-all();
+    callback shortcut-pending-confirm();
+    callback shortcut-pending-cancel();
+
+    // ----- Connection ------------------------------------------------------
+    in property <string> connection-current;
+    in property <string> connection-state;
+    // 0 = embedded, 1 = local daemon, 2 = remote.
+    in-out property <int> connection-mode;
+    in-out property <string> connection-address;
+    in-out property <string> connection-token-env;
+    // Validation result for the form: error text, or what it connects to.
+    in property <string> connection-check;
+    in property <bool> connection-valid: true;
+    in property <bool> connection-dirty;
+    in property <bool> connection-testing;
+    in property <string> connection-result;
+    in property <int> connection-result-tone;
+    in property <[KeyValue]> connection-facts;
+    in property <string> connection-saved;
+    callback connection-edited();
+    callback connection-test();
+    callback connection-save();
+    callback connection-revert();
+
+    // ----- Import from other agents ----------------------------------------
+    in property <bool> import-detecting;
+    in property <string> import-status;
+    in property <[string]> import-sources;
+    in-out property <int> import-source-index;
+    // Group headers and items; the toggle selects an item.
+    in property <[ItemRow]> import-items;
+    in property <int> import-selected;
+    in property <int> import-total;
+    in property <bool> import-running;
+    in property <string> import-run-status;
+    in property <int> import-run-tone;
+    in property <[ItemRow]> import-results;
+    in property <[ItemRow]> import-history;
+    in property <string> import-history-status;
+    callback import-detect();
+    callback import-source-selected(int);
+    callback import-toggle(string, bool);
+    callback import-select-all(bool);
+    callback import-start();
+
+    // ----- Feedback --------------------------------------------------------
+    in property <[string]> feedback-categories;
+    in-out property <int> feedback-category;
+    in-out property <string> feedback-text;
+    in-out property <bool> feedback-include-logs;
+    in property <[string]> feedback-threads;
+    in-out property <int> feedback-thread-index;
+    in-out property <string> feedback-error;
+    in property <bool> feedback-busy;
+    // Non-empty when config or policy turned feedback off.
+    in property <string> feedback-disabled;
+    in property <string> feedback-result;
+    in property <string> feedback-result-id;
+    in property <string> feedback-issue-url;
+    callback feedback-submit();
+    callback feedback-again();
+
+    // ----- Windows sandbox -------------------------------------------------
+    in property <bool> sandbox-visible;
+    // "" (unknown) | "ready" | "not-configured" | "update-required" |
+    // "unavailable" (not Windows) | "error"
+    in property <string> sandbox-readiness;
+    in property <string> sandbox-summary;
+    in property <string> sandbox-mode;
+    in property <string> sandbox-folder;
+    in property <bool> sandbox-elevated-allowed: true;
+    in property <bool> sandbox-unelevated-allowed: true;
+    in property <bool> sandbox-busy;
+    in property <string> sandbox-error;
+    in property <string> sandbox-notice;
+    in property <bool> sandbox-offer-unelevated;
+    // "elevated" | "unelevated"
+    callback sandbox-setup(string);
+    callback sandbox-refresh();
+}

@@ -1,0 +1,309 @@
+// Settings › Account: sign-in state, ChatGPT browser and device-code login,
+// API key login, sign out, and usage limits.
+//
+// OWNER: settings feature.
+
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton } from "theme.slint";
+import { SettingsState } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, Card, SectionTitle, KeyValueList } from "settings_widgets.slint";
+import { ServerDownBanner } from "settings_config.slint";
+
+export component AccountPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+    property <bool> idle: SettingsState.login-state == "" && !SettingsState.account-busy;
+
+    VerticalLayout {
+        PageHeader {
+            title: "Account";
+            subtitle: "How Codex signs in to OpenAI. Amazon Bedrock and other providers are set up on the Providers page.";
+            side-padding: root.side;
+            FlatButton {
+                text: "Refresh";
+                enabled: SettingsState.server-ready;
+                clicked => {
+                    SettingsState.account-refresh();
+                }
+            }
+        }
+        ServerDownBanner {
+            side-padding: root.side;
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            // Size the content to its preferred height; the default (min
+            // height) squeezes wrapped text and text inputs.
+            content-height: scroll-content-1.preferred-height;
+            scroll-content-1 := VerticalLayout {
+                alignment: start;
+                padding-left: root.side;
+                padding-right: root.side;
+                padding-bottom: Theme.pad-xl;
+                spacing: Theme.pad-m;
+
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        HorizontalLayout {
+                            spacing: Theme.pad-l;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                Text {
+                                    text: SettingsState.account-title;
+                                    color: Theme.text;
+                                    font-size: Theme.font-size-large;
+                                    font-weight: 600;
+                                    wrap: word-wrap;
+                                }
+                                if SettingsState.account-detail != "": Text {
+                                    text: SettingsState.account-detail;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            if SettingsState.can-logout: VerticalLayout {
+                                alignment: center;
+                                FlatButton {
+                                    text: "Sign out";
+                                    danger: true;
+                                    enabled: root.idle;
+                                    clicked => {
+                                        SettingsState.account-logout();
+                                    }
+                                }
+                            }
+                        }
+                        if SettingsState.account-facts.length > 0: KeyValueList {
+                            items: SettingsState.account-facts;
+                            key-width: 160px;
+                        }
+                    }
+                }
+
+                if SettingsState.account-error != "": Banner {
+                    tone: 3;
+                    text: SettingsState.account-error;
+                }
+                if SettingsState.account-notice != "": Banner {
+                    tone: 1;
+                    text: SettingsState.account-notice;
+                }
+
+                if SettingsState.login-state == "starting": Banner {
+                    tone: 0;
+                    text: "Starting sign-in…";
+                }
+
+                if SettingsState.login-state == "browser": Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        Text {
+                            text: "Finish signing in in your browser";
+                            color: Theme.text;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: "A browser window opened at the address below. Codex continues automatically once you approve the sign-in.";
+                            color: Theme.text-muted;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                        TextInput {
+                            text: SettingsState.login-url;
+                            read-only: true;
+                            single-line: false;
+                            wrap: char-wrap;
+                            color: Theme.text-muted;
+                            font-family: Theme.mono-font;
+                            font-size: Theme.font-size-small;
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            alignment: end;
+                            FlatButton {
+                                text: "Copy link";
+                                clicked => {
+                                    SettingsState.copy-text(SettingsState.login-url);
+                                }
+                            }
+                            FlatButton {
+                                text: "Open again";
+                                clicked => {
+                                    SettingsState.open-url(SettingsState.login-url);
+                                }
+                            }
+                            FlatButton {
+                                text: "Cancel";
+                                clicked => {
+                                    SettingsState.account-cancel-login();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if SettingsState.login-state == "device": Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        Text {
+                            text: "Sign in with a device code";
+                            color: Theme.text;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: "Open the page below on any device, sign in, and enter this code:";
+                            color: Theme.text-muted;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                        TextInput {
+                            text: SettingsState.login-code;
+                            read-only: true;
+                            color: Theme.text;
+                            font-family: Theme.mono-font;
+                            font-size: Theme.font-size-title + 4px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+                        TextInput {
+                            text: SettingsState.login-url;
+                            read-only: true;
+                            color: Theme.accent;
+                            font-family: Theme.mono-font;
+                            horizontal-alignment: center;
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            alignment: end;
+                            FlatButton {
+                                text: "Copy code";
+                                clicked => {
+                                    SettingsState.copy-text(SettingsState.login-code);
+                                }
+                            }
+                            FlatButton {
+                                text: "Open page";
+                                clicked => {
+                                    SettingsState.open-url(SettingsState.login-url);
+                                }
+                            }
+                            FlatButton {
+                                text: "Cancel";
+                                clicked => {
+                                    SettingsState.account-cancel-login();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    title: "Sign in";
+                    subtitle: "Signing in again replaces the current credentials.";
+                }
+
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        Text {
+                            text: "ChatGPT";
+                            color: Theme.text;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: SettingsState.chatgpt-login-allowed
+                                ? "Use your ChatGPT plan. Sign in in the browser, or use a device code when this computer cannot open a browser."
+                                : "ChatGPT sign-in is disabled by your organization.";
+                            color: Theme.text-muted;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            alignment: end;
+                            FlatButton {
+                                text: "Use a device code";
+                                enabled: root.idle && SettingsState.server-ready && SettingsState.chatgpt-login-allowed;
+                                clicked => {
+                                    SettingsState.account-login("device");
+                                }
+                            }
+                            FlatButton {
+                                text: "Sign in with ChatGPT";
+                                primary: root.idle && SettingsState.server-ready && SettingsState.chatgpt-login-allowed;
+                                enabled: root.idle && SettingsState.server-ready && SettingsState.chatgpt-login-allowed;
+                                clicked => {
+                                    SettingsState.account-login("browser");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        spacing: Theme.pad-m;
+                        Text {
+                            text: "OpenAI API key";
+                            color: Theme.text;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: SettingsState.api-login-allowed
+                                ? "Bill usage to an OpenAI Platform API key. The key is stored in Codex's credential store."
+                                : "API key sign-in is disabled by your organization.";
+                            color: Theme.text-muted;
+                            font-size: Theme.font-size-small;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.pad-m;
+                            key-edit := LineEdit {
+                                horizontal-stretch: 1;
+                                input-type: InputType.password;
+                                placeholder-text: "sk-…";
+                                enabled: root.idle && SettingsState.server-ready && SettingsState.api-login-allowed;
+                                accepted(text) => {
+                                    if text != "" {
+                                        SettingsState.account-api-key(text);
+                                        self.text = "";
+                                    }
+                                }
+                            }
+                            FlatButton {
+                                text: "Save key";
+                                enabled: key-edit.text != "" && root.idle && SettingsState.server-ready && SettingsState.api-login-allowed;
+                                clicked => {
+                                    SettingsState.account-api-key(key-edit.text);
+                                    key-edit.text = "";
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if SettingsState.account-kind == "chatgpt": SectionTitle {
+                    title: "Usage limits";
+                    subtitle: "Reported by ChatGPT for the signed-in plan.";
+                }
+                if SettingsState.account-kind == "chatgpt": Card {
+                    VerticalLayout {
+                        padding: Theme.pad-l;
+                        KeyValueList {
+                            items: SettingsState.rate-limits;
+                            key-width: 220px;
+                            empty-text: SettingsState.rate-limits-status != "" ? SettingsState.rate-limits-status : "No usage limits reported.";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

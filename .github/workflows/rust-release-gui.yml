@@ -1,0 +1,138 @@
+# Builds the codex-gui desktop app for macOS, Windows, and Linux.
+#
+# Runs on release tags and on demand. Each artifact holds codex-gui and the
+# helper executables the embedded runtime locates next to it. Artifacts are
+# unsigned; macOS bundles (including the helpers in Contents/MacOS) must be
+# signed and notarized with the same identity as the CLI before they are
+# distributed. Kept separate from rust-release.yml so the GUI cannot
+# block CLI releases while it matures.
+
+name: rust-release-gui
+on:
+  push:
+    tags:
+      - "rust-v*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: codex-gui - ${{ matrix.target }}
+    runs-on: ${{ matrix.runs_on || matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: codex-rs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-xlarge
+            target: aarch64-apple-darwin
+          - runner: macos-15-xlarge
+            target: x86_64-apple-darwin
+          - runner: windows-x64
+            target: x86_64-pc-windows-msvc
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+          - runner: windows-arm64
+            target: aarch64-pc-windows-msvc
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Cargo build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.target }}" == *-pc-windows-msvc ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
+          STABLE_GIT_COMMIT="$(git rev-parse HEAD)"
+          export STABLE_GIT_COMMIT
+          # Helpers that the embedded Codex runtime looks for next to the
+          # running executable (see "Package" below).
+          bins=(--bin codex-gui --bin codex-code-mode-host)
+          if [[ "${{ matrix.target }}" == *-pc-windows-msvc ]]; then
+            bins+=(--bin codex-windows-sandbox-setup --bin codex-command-runner)
+          fi
+          cargo build --target "${{ matrix.target }}" --release "${bins[@]}"
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          release_dir="target/${target}/release"
+          version="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
+          dist="dist/${target}"
+          mkdir -p "$dist"
+          # codex-gui runs the Codex runtime in-process, which finds its
+          # helper executables next to the running executable: the code-mode
+          # host everywhere, and on Windows the sandbox setup helper and the
+          # sandboxed command runner. (The Windows sandbox service is
+          # installed separately and is not located at runtime.)
+          helpers=(codex-code-mode-host)
+          case "$target" in
+            *-apple-darwin)
+              helper_args=()
+              for helper in "${helpers[@]}"; do
+                helper_args+=(--helper "${release_dir}/${helper}")
+              done
+              app="$(bash gui/packaging/macos/bundle-app.sh "${release_dir}/codex-gui" "$dist" "$version" "${helper_args[@]}")"
+              ditto -c -k --keepParent "$app" "${dist}/codex-gui-${target}.zip"
+              rm -rf "$app"
+              ;;
+            *-pc-windows-msvc)
+              helpers+=(codex-windows-sandbox-setup codex-command-runner)
+              files=(codex-gui.exe)
+              for helper in "${helpers[@]}"; do
+                files+=("${helper}.exe")
+              done
+              (cd "$release_dir" && 7z a "${GITHUB_WORKSPACE}/codex-rs/${dist}/codex-gui-${target}.zip" "${files[@]}")
+              ;;
+            *)
+              files=(codex-gui "${helpers[@]}")
+              for file in "${files[@]}"; do
+                strip "${release_dir}/${file}"
+              done
+              tar -C "$release_dir" -czf "${dist}/codex-gui-${target}.tar.gz" "${files[@]}"
+              ;;
+          esac
+          ls -la "$dist"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-gui-${{ matrix.target }}
+          path: codex-rs/dist/${{ matrix.target }}/*
+          if-no-files-found: error

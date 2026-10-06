@@ -1,0 +1,265 @@
+// Settings › Keyboard: every global shortcut with its binding, recording a
+// new key combination, conflicts, reset, and unbind.
+//
+// OWNER: settings feature (src/settings/keyboard.rs).
+//
+// The page's FocusScope takes focus when the page opens and when Record
+// is pressed. While a binding is recorded it forwards every key press to
+// Rust; the window-wide shortcut layer in app.slint lets the keys through
+// because Rust reports that it is recording. Otherwise keys pass on.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, FlatButton, LinkButton } from "theme.slint";
+import { SettingsState, ShortcutRow } from "settings_state.slint";
+import { SettingsMetrics, PageHeader, Banner, Card } from "settings_widgets.slint";
+
+// A key combination drawn as a keycap.
+component Keycap inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    in property <bool> muted;
+
+    width: max(64px, label.preferred-width + 2 * Theme.pad-m);
+    height: 24px;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.border-strong;
+    background: root.active ? Theme.accent-soft : Theme.surface-alt;
+
+    label := Text {
+        text: root.text;
+        color: root.active ? Theme.accent : root.muted ? Theme.text-faint : Theme.text;
+        font-size: Theme.font-size-small + 1px;
+        font-weight: root.active || root.muted ? 400 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component ShortcutRowView inherits Rectangle {
+    in property <ShortcutRow> shortcut;
+    callback record();
+
+    background: root.shortcut.recording ? Theme.accent-soft.with-alpha(0.5) : transparent;
+
+    VerticalLayout {
+        padding-left: Theme.pad-l;
+        padding-right: Theme.pad-l;
+        padding-top: Theme.pad-m;
+        padding-bottom: Theme.pad-m;
+        spacing: Theme.pad-s;
+
+        HorizontalLayout {
+            spacing: Theme.pad-m;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 1px;
+                Text {
+                    text: root.shortcut.label;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+                if root.shortcut.custom: Text {
+                    text: "Default: " + root.shortcut.default-binding;
+                    color: Theme.text-faint;
+                    font-size: Theme.font-size-small;
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Keycap {
+                    text: root.shortcut.recording ? "Press keys…" : root.shortcut.binding;
+                    active: root.shortcut.recording;
+                    muted: root.shortcut.unbound;
+                }
+            }
+            if root.shortcut.recording: VerticalLayout {
+                alignment: center;
+                FlatButton {
+                    text: "Cancel";
+                    clicked => {
+                        SettingsState.shortcut-cancel();
+                    }
+                }
+            }
+            if !root.shortcut.recording: VerticalLayout {
+                alignment: center;
+                FlatButton {
+                    text: "Record";
+                    clicked => {
+                        root.record();
+                    }
+                }
+            }
+            // Fixed-width slots keep the columns aligned across rows.
+            VerticalLayout {
+                width: 44px;
+                alignment: center;
+                if root.shortcut.custom: LinkButton {
+                    text: "Reset";
+                    text-color: Theme.text-muted;
+                    clicked => {
+                        SettingsState.shortcut-reset(root.shortcut.action);
+                    }
+                }
+            }
+            VerticalLayout {
+                width: 50px;
+                alignment: center;
+                if !root.shortcut.unbound: LinkButton {
+                    text: "Unbind";
+                    text-color: Theme.text-muted;
+                    clicked => {
+                        SettingsState.shortcut-unbind(root.shortcut.action);
+                    }
+                }
+            }
+        }
+        if root.shortcut.warning != "": HorizontalLayout {
+            spacing: Theme.pad-m;
+            Text {
+                text: root.shortcut.warning;
+                color: Theme.warning;
+                font-size: Theme.font-size-small;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if root.shortcut.conflict-action != "": VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Unbind " + root.shortcut.conflict-label;
+                    text-color: Theme.warning;
+                    clicked => {
+                        SettingsState.shortcut-unbind(root.shortcut.conflict-action);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Warning card for a recorded binding that another action already uses.
+component PendingConflict inherits Rectangle {
+    background: Theme.warning-soft;
+    border-radius: Theme.radius;
+
+    HorizontalLayout {
+        padding: Theme.pad-m;
+        padding-left: Theme.pad-l;
+        spacing: Theme.pad-m;
+        Text {
+            text: SettingsState.shortcut-pending;
+            color: Theme.warning;
+            wrap: word-wrap;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        VerticalLayout {
+            alignment: center;
+            FlatButton {
+                text: "Cancel";
+                clicked => {
+                    SettingsState.shortcut-pending-cancel();
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            FlatButton {
+                text: SettingsState.shortcut-pending-accept;
+                primary: true;
+                clicked => {
+                    SettingsState.shortcut-pending-confirm();
+                }
+            }
+        }
+    }
+}
+
+export component KeyboardPage inherits Rectangle {
+    property <length> side: SettingsMetrics.side(self.width);
+
+    init => {
+        capture.focus();
+    }
+
+    capture := FocusScope {
+        // Clicking a focusable element elsewhere ends the recording.
+        focus-on-click: false;
+        key-pressed(event) => {
+            if SettingsState.shortcut-recording == "" {
+                return reject;
+            }
+            SettingsState.shortcut-key(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt, event.modifiers.meta);
+            accept
+        }
+        focus-lost => {
+            if SettingsState.shortcut-recording != "" {
+                SettingsState.shortcut-cancel();
+            }
+        }
+
+        VerticalLayout {
+            PageHeader {
+                title: "Keyboard shortcuts";
+                subtitle: "Shortcuts work anywhere in the window. Choose Record, then press the new key combination; Esc cancels.";
+                side-padding: root.side;
+                FlatButton {
+                    text: "Reset all";
+                    enabled: SettingsState.shortcut-any-custom;
+                    clicked => {
+                        SettingsState.shortcut-reset-all();
+                    }
+                }
+            }
+            ScrollView {
+                vertical-stretch: 1;
+                // Size the content to its preferred height; the default (min
+                // height) squeezes wrapped text.
+                content-height: content.preferred-height;
+                content := VerticalLayout {
+                    alignment: start;
+                    padding-left: root.side;
+                    padding-right: root.side;
+                    padding-bottom: Theme.pad-xl;
+                    spacing: Theme.pad-m;
+
+                    if SettingsState.shortcut-pending != "": PendingConflict { }
+                    if SettingsState.shortcut-notice != "": Banner {
+                        tone: SettingsState.shortcut-notice-tone;
+                        text: SettingsState.shortcut-notice;
+                    }
+                    Card {
+                        VerticalLayout {
+                            padding-top: Theme.pad-xs;
+                            padding-bottom: Theme.pad-xs;
+                            for row[index] in SettingsState.shortcut-rows: VerticalLayout {
+                                if index > 0: Rectangle {
+                                    height: 1px;
+                                    background: Theme.border;
+                                }
+                                ShortcutRowView {
+                                    shortcut: row;
+                                    record => {
+                                        capture.focus();
+                                        SettingsState.shortcut-record(row.action);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Shortcuts are saved in gui.json in your Codex home. Combinations used for text editing, such as copy and paste, cannot be assigned.";
+                        color: Theme.text-faint;
+                        font-size: Theme.font-size-small;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
