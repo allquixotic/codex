@@ -27,7 +27,7 @@ id|status|task|cites
 T1|x|Fix small-scroll tail feedback|V1,I.scroll
 T2|x|Recover Windows retained surface; Auto uses CPU in RDP|V2,I.paint
 T3|x|Shared link menus and hover tooltips|V3,V4,I.links
-T4|~|Verify, commit, push, publish Windows package, clean outputs|V1,V2,V3,V4
+T4|x|Verify, commit, push, publish Windows package, clean outputs|V1,V2,V3,V4; GUI.md §16
 
 ## §B BUGS
 id|date|cause|fix

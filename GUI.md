@@ -1046,3 +1046,28 @@ regressions are recorded in `codex-rs/gui/SPEC.md`.
 The pinned core source under `third_party/slint` has a one-line correction to
 accumulate hit-test results across every wrapped line. Remove the override when
 an upstream Slint release supplies the correction.
+
+## 16. Windows 0.1.2 release
+
+Published `codex-gui-v0.1.2` from `e11ae5133722b031ebf4612b4c7557a04bb04652`
+on October 6, 2026. Development verification completed with 620 GUI tests and
+GUI clippy with warnings denied before the single Windows x64 release build.
+The four packaged executables have verified x64 PE headers and static CRT;
+the main executable uses the Windows GUI subsystem.
+
+The finished package passed Windows 11 software-renderer checks on `avd` with
+isolated configuration and mocked responses. A 10-pixel upward idle scroll
+detached following and persisted through row measurements. Minimize/restore
+produced a complete frame. Web/file context menus exposed the expected actions,
+copied exact destinations, and opened a file in its own tab. Both destination
+tooltips appeared after stationary hover and dismissed on one-pixel movement.
+These Windows checks do not directly reproduce the original Azure Virtual
+Desktop driver failure; the lost-buffer regression covers the recovery path.
+
+The 140,276,460-byte ZIP has SHA-256
+`2cf0e06e9256641de076ed430e1625792fbe6cc8e02cb3ed1c03bb99b6ad710d`.
+The transferred Windows package and published GitHub asset matched this digest.
+Only after publication verification, removed 17.0 GiB of Cargo outputs, the
+local published ZIP, temporary V8 files, and Windows smoke binaries and ZIP.
+Validation logs and screenshots remain. No macOS release build was made.
+The Mac GUI testing prohibition is recorded in `AGENTS.md` and remains in force.
