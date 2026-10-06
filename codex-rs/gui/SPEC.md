@@ -7,6 +7,7 @@ Broader GUI contract: repository `GUI.md`.
 ## §C CONSTRAINTS
 - Native Slint 1.18.1; bound transcript memory; no idle repaint polling.
 - Windows x64 release first; macOS release builds deferred.
+- Never run GUI tests or launch this project's GUI on Sean's Mac unless the user explicitly says "test the GUI on this Mac"; use Windows hosts.
 - Full release build only after fixes and development verification complete.
 - Verify GitHub asset digest before deleting local build outputs.
 

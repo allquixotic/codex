@@ -1013,6 +1013,11 @@ validation logs and screenshots remain. No macOS release build was made.
 
 ## 15. Conversation scrolling, Windows redraw and link interactions
 
+**Testing restriction:** Never launch or test this project's GUI on Sean's Mac,
+including GUI test fixtures, unless the user explicitly says “test the GUI on
+this Mac”. This persists across sessions. Use Windows hosts for GUI testing;
+Mac source checks and Windows cross-builds remain permitted. See `AGENTS.md`.
+
 Upward wheel gestures detach tail-following before virtual row measurements
 change the transcript height. Small idle scrolls and scrollbar gestures detach.
 Returning to the bottom or choosing “Jump to latest”
