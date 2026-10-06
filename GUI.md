@@ -1,8 +1,8 @@
 # codex-gui: a native Slint front end for Codex
 
 Status: implemented in `codex-rs/gui` on `feature/codex-gui`, committed as
-`163153140f`, and published on `allquixotic/codex` as
-[`codex-gui-v0.1.0`](https://github.com/allquixotic/codex/releases/tag/codex-gui-v0.1.0)
+`8233eb8804`, and published on `allquixotic/codex` as
+[`codex-gui-v0.1.1`](https://github.com/allquixotic/codex/releases/tag/codex-gui-v0.1.1)
 (Windows x64 zip). macOS release builds are deferred by request.
 
 This document retains the goals, architectural decisions, feature coverage,
@@ -992,4 +992,21 @@ window title and history-only search hits. Rejecting gpt-6-luna caused a success
 retry with gpt-6.1-sol on the same provider. Bedrock geographic prefixes and ARNs
 are covered by model-selection tests; no live Bedrock model call was made.
 Publishing-helper tests verify digest mismatch preserves local artifacts and a
-matching digest permits cleanup. No release build or GitHub upload was performed.
+matching digest permits cleanup. These development checks preceded the release
+recorded below.
+
+## 14. Windows 0.1.1 release
+
+Published `codex-gui-v0.1.1` from `8233eb8804` on October 6, 2026. The Windows
+x64 ZIP contains all four release executables, with x64 PE headers, a static
+CRT and the GUI subsystem verified. The finished package passed a Windows 11
+software-renderer smoke run on `avd`, using an isolated configuration and mocked
+responses: long text and narrow layouts, same-folder `/new`, rename, archive,
+folderless creation, settings and history search with Luna fallback.
+
+The 140,199,373-byte ZIP has SHA-256
+`ba050e173f233b6f3a881143dd21b22a611ba73237fcec74d7e920a41faeb9d0`.
+GitHub's published digest matched before cleanup. Removed 20.5 GiB of Cargo
+outputs, the verified local copies of both published Windows packages and the
+temporary V8 download. Removed the Windows smoke-test binaries and ZIP as well;
+validation logs and screenshots remain. No macOS release build was made.
